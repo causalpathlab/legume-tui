@@ -6,8 +6,44 @@ laptop) and come back to by starting the tool again or with `<tool>
 attach`; the program, and whatever it started, keeps running in between.
 Ctrl+Alt+S moves the terminal to another of the tool's sessions.
 
-Unix only (Linux and macOS). Not published; used as a path dependency while
-piloting.
+It also holds what the tools' terminal UIs share: picking the image
+protocol of the attached terminal, the session subcommands and their help,
+and keeping log lines off the screen.
+
+Sessions need Unix (Linux and macOS). Elsewhere the same calls run every
+TUI plain, in the terminal it started in, and the session subcommands say
+that sessions are not supported there; a tool needs no `cfg` of its own.
+
+```toml
+[dependencies]
+legume-tui = "0.2"
+```
+
+## Adopting it in a tool
+
+1. `legume_tui::serve_if_host()` first thing in `main`, before any of the
+   tool's own work: a session's host runs the same executable.
+2. `TOOL.session("screen", &opts)` at each TUI, in place of
+   `ratatui::init()`, before work the program would otherwise repeat
+   (`const TOOL: legume_tui::Tool = legume_tui::Tool::new("tool")`).
+3. Each round of the loop: `session.draw` (nothing while detached),
+   `session.status` (one line for the picker and `sessions`), and
+   `session.poll` or `poll_with` in place of crossterm's poll.
+4. `session.terminal_with(Modes { .. })` for the screen and its modes
+   (mouse, keyboard enhancement, paste, focus), and `session.restore()`
+   at the end, in place of `ratatui::restore()`.
+5. Pictures: `graphics::pick` once the screen is up, and
+   `graphics::reprobe` in the `poll_with` hook after every attach.
+6. `session.run_child(&mut command)` for a program the TUI hands the
+   terminal to, `session.command` for one the tool waits for itself, and
+   `session.off_screen(|| ..)` for its own work on the normal screen.
+7. The `attach`, `sessions`, `kill` and `rename` subcommands from
+   `legume_tui::cli`, `cli::SessionArgs` flattened into each TUI
+   subcommand, and `cli::session_help` at the end of its long help.
+8. `kill` is the quit path: when `session.stop_requested()` is true, stop
+   as the quit key does, wrapping up running work.
+9. `let _quiet = legume_tui::logs::quiet();` while the screen is up, so
+   no log line lands on it.
 
 ## How it works
 
@@ -59,10 +95,19 @@ SIGTERM, SIGINT, SIGQUIT and SIGHUP end it as a detach, with the terminal
 restored; once it is done (in the picker, or after `attach` returns) they
 end the process as by default.
 
-Order on attach: the client says hello with its size, goes raw and says
-ready; only then does the host size the pty, make it the client and tell
-the program to repaint and probe the terminal (so the probe's reply has a
-terminal to come from).
+Order on attach: the client says hello with its size and what of its
+environment says which terminal it is, whether it is inside tmux and
+whether it is reached over ssh (`legume_tui::TERMINAL_VARS`: `TERM`,
+`TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `KITTY_WINDOW_ID`, `LC_TERMINAL`,
+`COLORTERM`, `TMUX`, `WEZTERM_EXECUTABLE`, `KONSOLE_VERSION`,
+`ITERM_SESSION_ID`, `SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`), goes raw and says ready; only then does the host size the pty,
+make it the client, write that environment beside the socket
+(`session.terminal_env(name)` reads it, so a guess made after attaching
+from another terminal is that terminal's) and tell the program to repaint
+and probe the terminal (so the probe's reply has a terminal to come
+from). `legume_tui::attaches()` counts the attaches the program has heard
+of, for a cache of what suits the terminal that is not where the loop
+takes the repaint.
 
 ## When it hosts
 
@@ -82,7 +127,7 @@ return `false` to make hosting opt-in (`Options::detach` then asks for it).
 ## Using it in a tool
 
 ```rust
-use legume_tui::graphics::Repick;
+use legume_tui::graphics::{Fallback, Graphics, Repick};
 const TOOL: legume_tui::Tool = legume_tui::Tool::new("tool");
 
 fn main() -> anyhow::Result<()> {
@@ -92,6 +137,8 @@ fn main() -> anyhow::Result<()> {
 
 // In place of ratatui::init() / ratatui::restore():
 let session = TOOL.session("view", &args.session.options(has_target))?;
+let _quiet = legume_tui::logs::quiet(); // no log lines over the screen
+let graphics: Graphics = args.graphics; // `--graphics`, a clap ValueEnum
 let mut terminal = session.terminal_with(legume_tui::Modes {
     mouse: legume_tui::Mouse::Buttons,
     ..Default::default()
@@ -103,7 +150,7 @@ while !quit && !session.stop_requested() {
     session.status(&app.one_line_status()); // the same line is not written again
     let event = session.poll_with(&mut terminal, app.wait(), || {
         // After an attach, before the mouse is on again.
-        match legume_tui::graphics::reprobe(&session, &picker, forced) {
+        match legume_tui::graphics::reprobe(&session, &picker, graphics, Fallback::Probe) {
             Repick::Same => {}
             Repick::Resend => app.encode_images_again(),
             Repick::Changed(p) => app.remake_images(&p),
@@ -153,7 +200,10 @@ Commands::Rename(r) => legume_tui::cli::rename(&TOOL, &r)?,
 
 and `#[command(flatten)] session: legume_tui::cli::SessionArgs` on each TUI
 subcommand for `--no-detach` and `--session NAME`. Their help comes with
-them: `cli::SESSION_HELP` for a TUI subcommand's long help, and
+them: `cli::session_help(&TOOL, cli::SessionHelp { .. })` for the end of a
+TUI subcommand's long help, in the tool's words (what goes on while
+detached, who offers the sessions to return to, a sentence more), wrapped
+to 70 columns and never inside a `` `quoted command` ``; and
 `cli::about("tool")` for the long help of `attach`, `sessions`, `kill`
 and `rename`.
 
@@ -213,16 +263,51 @@ tool starts and waits for itself gets the same environment from
 (`LEGUME_TUI_NO_DETACH=1` when this one runs plain by `--no-detach` or
 that variable). `run_child` sets it too.
 
+`session.off_screen(|| work())` does the same for the program's own work
+that writes to the terminal as a plain program does: with the screen up,
+its modes off, raw mode left and the normal screen shown while the work
+runs, then the screen taken back and repainted whole. `kill` meanwhile
+asks the program to stop (`session.stop_requested()`), as while the
+screen is up.
+
 ## Features
 
 - `clap` (default): the `attach`, `sessions`, `kill` and `rename` handlers
   and the `SessionArgs` flags.
-- `graphics` (default): `graphics::probe`, which asks the attached terminal
-  for its image protocol with a 500 ms timeout and falls back to block
-  characters (also while detached); `graphics::probe_as`, with a protocol
-  the user forced; and `graphics::reprobe`, which says what pictures made
-  for the last terminal need: nothing, sent again (kitty's images, which
-  the client's reset on attach deleted), or made again with a new picker.
+- `graphics` (default): `graphics::Graphics`, the `--graphics` value
+  (auto, kitty, sixel, iterm2, blocks) as a clap `ValueEnum`, and
+  `graphics::pick(&session, graphics, fallback)`: a protocol the user
+  named is taken as it is; for auto, `Fallback::Probe` asks the terminal
+  (500 ms timeout; kitty or sixel as it answers, but not from WezTerm or
+  Konsole, else iTerm2 where the environment names a terminal that has
+  it, as ratatui-image's own query decides) and `Fallback::Env` guesses
+  from its environment (`graphics::env_guess`: `TERM`, `TERM_PROGRAM`,
+  `KITTY_WINDOW_ID`, `LC_TERMINAL`, `TMUX`); block characters when
+  neither finds one, while detached, or when the cell's pixel size is
+  unknown. `graphics::reprobe` says what pictures made for the last
+  terminal need: nothing, sent again (kitty's images, which the client's
+  reset on attach deleted), or made again with a new picker.
+  `graphics::pick_with` gives the terminal's answer beside the picker,
+  with its background colour (OSC 11), and `graphics::query` the answer
+  alone.
+
+  Whether the attached terminal is inside tmux comes from what it passed
+  on (`graphics::in_tmux(&session)`), and the query is wrapped for tmux
+  by that. A picker wraps its own pictures as ratatui-image decided once,
+  from this process's `TERM` and `TERM_PROGRAM`, and has no setter for
+  it: when the two disagree after an attach (started outside tmux and
+  attached from inside it, or the other way round), auto takes block
+  characters.
+
+  The query is the crate's own: it reads the answer on the calling thread,
+  a byte at a time and only while one is waiting, so once it returns
+  nothing is left reading stdin, even when the terminal never answered
+  (ratatui-image's query leaves a reader thread behind that takes the next
+  keys). A reply that comes after the timeout reaches the program as
+  input.
+- `logs` (default): `logs::quiet()`, a guard that turns logging off while
+  the screen is up and back on when dropped (a panic unwinding past it
+  drops it).
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it.
@@ -252,4 +337,8 @@ waking a screen that waits long for a key, kill passed on to a child run
 before the screen, a program that fails at once, one slow to start its
 screen, one that stops reading its input, a signal in the switch picker),
 through the `testing` harness.
-Graphics on real terminals are checked by hand.
+The graphics query is tested over a pty pair: a terminal that never
+answers leaves the next keys to the program's next read, and an answer
+is read to its end and no further. Graphics on real terminals are checked
+by hand. The plain path (no sessions) is built and tested on Unix with
+`RUSTFLAGS="--cfg legume_tui_plain"`.

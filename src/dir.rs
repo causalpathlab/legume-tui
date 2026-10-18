@@ -75,6 +75,12 @@ pub(crate) fn status_file(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.status"))
 }
 
+/// What of the attached terminal's environment session `id` in `dir`
+/// was passed (see [`crate::Session::terminal_env`]).
+pub(crate) fn terminal_env_file(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.env"))
+}
+
 /// The label of session `id` in `dir` (see [`set_label`]).
 pub(crate) fn label_file(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.label"))
@@ -312,9 +318,12 @@ fn read_line(path: &Path) -> Option<String> {
 }
 
 /// Replace `<name>.<ext>` in `dir` with `text` at once: written beside it,
-/// then renamed over it.
+/// then renamed over it. The file written beside it is this call's own,
+/// so two threads of a process replacing the same file do not share it.
 fn replace_file(dir: &Path, name: &str, ext: &str, text: &str) -> io::Result<()> {
-    let tmp = dir.join(format!(".{name}.{ext}.{}", std::process::id()));
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let tmp = dir.join(format!(".{name}.{ext}.{}.{call}", std::process::id()));
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, dir.join(format!("{name}.{ext}")))
 }
@@ -334,6 +343,24 @@ pub(crate) fn write_status(dir: &Path, name: &str, text: &str) -> io::Result<()>
         .take(LONGEST)
         .collect();
     replace_file(dir, name, "status", line.trim())
+}
+
+/// Replace what session `id` in `dir` has of the attached terminal's
+/// environment at once.
+pub(crate) fn write_terminal_env(
+    dir: &Path,
+    id: &str,
+    vars: &[(String, String)],
+) -> io::Result<()> {
+    let text = String::from_utf8_lossy(&crate::wire::encode_env(vars)).into_owned();
+    replace_file(dir, id, "env", &text)
+}
+
+/// What session `id` in `dir` has of the attached terminal's
+/// environment; None before any attach.
+pub(crate) fn read_terminal_env(dir: &Path, id: &str) -> Option<Vec<(String, String)>> {
+    let bytes = std::fs::read(terminal_env_file(dir, id)).ok()?;
+    Some(crate::wire::decode_env(&bytes))
 }
 
 /// The label of session `id` in `dir`, if it has one.
@@ -437,8 +464,8 @@ fn taken_by(name: &str, other: &str) -> io::Error {
     )
 }
 
-/// Remove what session `id` left in `dir` (socket, status, label and
-/// log), unless a live host has the id again; under the lock, so a launch
+/// Remove what session `id` left in `dir` (socket, status, label, the
+/// terminal's environment and log), unless a live host has the id again; under the lock, so a launch
 /// claiming the id meanwhile keeps what it made.
 pub(crate) fn clear(dir: &Path, id: &str) -> io::Result<()> {
     let _lock = lock(dir)?;
@@ -447,6 +474,7 @@ pub(crate) fn clear(dir: &Path, id: &str) -> io::Result<()> {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(status_file(dir, id));
         let _ = std::fs::remove_file(label_file(dir, id));
+        let _ = std::fs::remove_file(terminal_env_file(dir, id));
         let _ = std::fs::remove_file(log_file(dir, id));
     }
     Ok(())

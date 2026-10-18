@@ -8,7 +8,7 @@
 //! start its screen, one that stops reading its input. The demo sets
 //! SIGPIPE to its default, as some tools do.
 
-#![cfg(unix)]
+#![cfg(sessions)]
 
 use legume_tui::testing::{alive, Private, PROMPT, WAIT};
 use std::io::Write;
@@ -109,6 +109,23 @@ fn detach_attach_lose_nest_and_kill() {
     dir.gone(pid);
     assert!(dir.run(&["sessions"]).contains("no live demo sessions"));
     assert!(dir.is_empty(), "left behind: {:?}", dir.sockets());
+}
+
+#[test]
+fn the_terminal_attached_last_is_the_one_the_program_hears_of() {
+    let dir = private();
+    let mut first = dir.term(&[], &[("TERM_PROGRAM", "first-terminal")]);
+    first.wait_for("terminal=first-terminal");
+    first.type_(b"\x1b\x04");
+    first.answer(1, b"\r");
+    assert_eq!(first.exit_code(), 0);
+    let pid = dir.program_pid();
+    // From another terminal: the repaint names it.
+    let mut second = dir.term(&["attach"], &[("TERM_PROGRAM", "second-terminal")]);
+    second.wait_for("terminal=second-terminal");
+    assert!(dir.run(&["kill"]).contains("stopped"));
+    assert_eq!(second.exit_code(), 0);
+    dir.gone(pid);
 }
 
 #[test]

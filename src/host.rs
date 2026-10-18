@@ -10,7 +10,9 @@
 //!
 //! The program hears from its host through a pipe (see [`crate::Session`]):
 //! [`ATTACHED`] once a client is ready, which is the program's cue to
-//! repaint and probe the terminal, and [`DETACHED`] when it leaves. A TUI
+//! repaint and probe the terminal, and [`DETACHED`] when it leaves. What
+//! the client said of its terminal's environment is written beside the
+//! socket first ([`crate::Session::terminal_env`]). A TUI
 //! the program starts on the same terminal hears the same over a
 //! [`wire::WATCH`] connection.
 //!
@@ -203,6 +205,9 @@ struct Shared {
     /// The program's command line, for listings.
     command: String,
     closing: AtomicBool,
+    /// The session's directory and id, where the attached terminal's
+    /// environment is written for the program.
+    at: (PathBuf, String),
 }
 
 impl Shared {
@@ -406,6 +411,7 @@ impl Host {
                 .map_or(0, |d| d.as_secs()),
             command,
             closing: AtomicBool::new(false),
+            at: (dir.clone(), id.clone()),
         });
         let (done, drained) = std::sync::mpsc::channel();
         {
@@ -630,6 +636,7 @@ fn attach(mut conn: UnixStream, hello: &[u8], shared: &Arc<Shared>) {
     }
     // Applied only once this client is the one attached.
     let mut size = Size::decode(&hello[1..]);
+    let env = wire::hello_env(hello);
     let mut id = None;
     while let Ok(Some((tag, body))) = wire::read_frame(&mut conn) {
         let current = id.is_some() && shared.current.load(SeqCst) == id.unwrap_or(0);
@@ -666,6 +673,10 @@ fn attach(mut conn: UnixStream, hello: &[u8], shared: &Arc<Shared>) {
                         }
                     }
                     shared.current.store(me, SeqCst);
+                    // Under the lock that makes it current, so the file is
+                    // the current client's when two attach at once.
+                    let (dir, sid) = &shared.at;
+                    let _ = crate::dir::write_terminal_env(dir, sid, &env);
                     c.replace(Client {
                         id: me,
                         out,
@@ -680,6 +691,8 @@ fn attach(mut conn: UnixStream, hello: &[u8], shared: &Arc<Shared>) {
                     old.out.finish(wire::frame(wire::ELSEWHERE, &[]));
                 }
                 id = Some(me);
+                // After the environment is written: the program reads it as
+                // it repaints.
                 shared.tell(ATTACHED);
                 shared.wake();
             }

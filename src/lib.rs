@@ -40,39 +40,65 @@
 //! # }
 //! ```
 //!
-//! Unix only.
-#![cfg(unix)]
+//! Sessions need Unix. Elsewhere the same calls run every TUI plain
+//! ([`Bypass::Unsupported`]): [`Tool::session`] returns a plain session,
+//! and the `attach`, `sessions`, `kill` and `rename` handlers say that
+//! sessions are not supported here.
 
+// The keys' spelling, for help screens everywhere; read only in sessions.
+#[cfg_attr(not(sessions), allow(dead_code))]
 mod chord;
-mod client;
-pub mod dir;
-mod host;
 mod mode;
-mod picker;
-mod scan;
 mod screen;
+
+#[cfg(sessions)]
+mod client;
+#[cfg(sessions)]
+pub mod dir;
+#[cfg(sessions)]
+mod host;
+#[cfg(sessions)]
+mod picker;
+#[cfg(sessions)]
+mod scan;
+#[cfg(sessions)]
 mod stop;
+#[cfg(sessions)]
 mod wire;
+
+#[cfg(not(sessions))]
+mod plain;
+#[cfg(not(sessions))]
+use plain::{dir, session_at, stop, Control};
 
 #[cfg(feature = "clap")]
 pub mod cli;
 #[cfg(feature = "graphics")]
 pub mod graphics;
-#[cfg(feature = "testing")]
+#[cfg(feature = "logs")]
+pub mod logs;
+#[cfg(all(feature = "testing", sessions))]
 pub mod testing;
 
+#[cfg(sessions)]
 pub use dir::{runtime_dir, Listed};
 pub use mode::{hosts_by_default, Bypass};
 pub use screen::{Modes, Mouse};
+#[cfg(sessions)]
 pub use wire::Size;
 
 use ratatui::crossterm::event::{self, Event};
 use std::io;
+#[cfg(sessions)]
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
-use std::path::{Path, PathBuf};
+#[cfg(sessions)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+#[cfg(sessions)]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 /// Set to `1` (anything but empty or `0`) to run every TUI plain.
@@ -90,8 +116,10 @@ pub const SESSION_VAR: &str = "LEGUME_TUI_SESSION";
 /// Where the sockets live, in place of the default runtime directory.
 pub const DIR_VAR: &str = "LEGUME_TUI_DIR";
 /// Set in a host process: the name of the session it serves.
+#[cfg(sessions)]
 pub(crate) const HOST_VAR: &str = "LEGUME_TUI_HOST";
 /// The launching terminal's size, for the host to start the pty with.
+#[cfg(sessions)]
 pub(crate) const SIZE_VAR: &str = "LEGUME_TUI_SIZE";
 /// The file descriptor of the program's control channel.
 pub(crate) const CONTROL_VAR: &str = "LEGUME_TUI_CONTROL";
@@ -99,9 +127,31 @@ pub(crate) const CONTROL_VAR: &str = "LEGUME_TUI_CONTROL";
 pub(crate) const PARENT_VAR: &str = "LEGUME_TUI_HOST_PID";
 /// The file descriptor of the listening socket the launching client
 /// bound for its host.
+#[cfg(sessions)]
 pub(crate) const LISTEN_VAR: &str = "LEGUME_TUI_LISTEN";
 
+/// What of its environment an attaching client passes on, for
+/// [`Session::terminal_env`]: what says which terminal it is, whether it
+/// is inside tmux, and whether it is reached over ssh. The list may grow
+/// in a minor release.
+pub const TERMINAL_VARS: &[&str] = &[
+    "TERM",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "KITTY_WINDOW_ID",
+    "LC_TERMINAL",
+    "COLORTERM",
+    "TMUX",
+    "WEZTERM_EXECUTABLE",
+    "KONSOLE_VERSION",
+    "ITERM_SESSION_ID",
+    "SSH_CONNECTION",
+    "SSH_CLIENT",
+    "SSH_TTY",
+];
+
 /// How long a launching client waits for its host's socket.
+#[cfg(sessions)]
 const LAUNCH: Duration = Duration::from_secs(5);
 /// The shortest wait of [`Session::poll`] while detached.
 const DETACHED_POLL: Duration = Duration::from_secs(1);
@@ -178,6 +228,7 @@ pub(crate) fn exe_name() -> String {
 /// and exit; otherwise return at once. Call it first thing in `main`, so a
 /// host does none of the tool's own work before it starts the program.
 pub fn serve_if_host() {
+    #[cfg(sessions)]
     if let Some(name) = std::env::var_os(HOST_VAR) {
         host::serve_session(&name.to_string_lossy());
     }
@@ -206,6 +257,18 @@ impl Tool {
         format!("{}-", self.name)
     }
 
+    /// Start the session of the tool's TUI `screen`: where sessions are
+    /// not supported, always a plain one ([`Bypass::Unsupported`], unless
+    /// the user opted out).
+    #[cfg(not(sessions))]
+    pub fn session(&self, screen: &str, opts: &Options) -> io::Result<Session> {
+        let _ = screen;
+        Ok(match mode::mode(opts, &mode::Env::read()) {
+            mode::Mode::Plain(why @ (Bypass::Flag | Bypass::Env)) => Session::plain(why),
+            _ => Session::plain(Bypass::Unsupported),
+        })
+    }
+
     /// Start the session of the tool's TUI `screen`, named
     /// `tool-screen-N` (`tool-screen-<name>` with [`Options::name`]).
     ///
@@ -219,7 +282,9 @@ impl Tool {
     /// with the program's status. In that program the call returns a
     /// hosted [`Session`]. Elsewhere it returns a plain one and the TUI
     /// runs as before. Call it before any work the program would otherwise
-    /// repeat.
+    /// repeat. Where sessions are not supported, always a plain one
+    /// ([`Bypass::Unsupported`], unless the user opted out).
+    #[cfg(sessions)]
     pub fn session(&self, screen: &str, opts: &Options) -> io::Result<Session> {
         serve_if_host();
         let session = match mode::mode(opts, &mode::Env::read()) {
@@ -254,7 +319,10 @@ impl Tool {
         }
         Ok(session)
     }
+}
 
+#[cfg(sessions)]
+impl Tool {
     /// Before a launch: with nothing named and `live` sessions of the
     /// tool, the picker; a status to exit with if the user returned to
     /// one, or chose neither. With something named, a hint naming the
@@ -374,6 +442,7 @@ impl Tool {
 
 /// A session claimed for a launch: until its host is up, a failure takes
 /// away all it left (socket, label, log).
+#[cfg(sessions)]
 struct Claim<'a> {
     dir: &'a Path,
     name: String,
@@ -382,6 +451,7 @@ struct Claim<'a> {
     up: bool,
 }
 
+#[cfg(sessions)]
 impl Drop for Claim<'_> {
     fn drop(&mut self) {
         if !self.up {
@@ -392,16 +462,31 @@ impl Drop for Claim<'_> {
     }
 }
 
+/// How many attaches this process has heard of ([`attaches`]).
+static ATTACHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times a terminal has attached to this process's session, as
+/// heard by the last [`Session::poll`] (or [`Session::take_repaint`],
+/// [`Session::attached`]); 0 when plain. A cache of what suits the
+/// terminal (an image picker) that is not where the loop takes the
+/// repaint can keep the count it was made at and make itself again when
+/// the count is another.
+pub fn attaches() -> u64 {
+    ATTACHES.load(SeqCst)
+}
+
 /// What the host says about attaching, as this process reads it: the
 /// control channel of the program the host started, or a watch on the
 /// host by a TUI that program started on the same terminal. Shared by
 /// every session the process opens.
+#[cfg(sessions)]
 struct Control {
     fd: OwnedFd,
     attached: AtomicBool,
     repaint: AtomicBool,
 }
 
+#[cfg(sessions)]
 impl Control {
     fn new(fd: OwnedFd) -> Arc<Self> {
         Arc::new(Self {
@@ -428,12 +513,25 @@ impl Control {
         }
     }
 
+    /// Whether a client is attached, as last said.
+    fn attached(&self) -> bool {
+        self.drain();
+        self.attached.load(SeqCst)
+    }
+
+    /// Whether an attach asked for a repaint since last time.
+    fn take_repaint(&self) -> bool {
+        self.drain();
+        self.repaint.swap(false, SeqCst)
+    }
+
     fn heard(&self, said: &[u8]) {
         for &b in said {
             match b {
                 host::ATTACHED => {
                     self.attached.store(true, SeqCst);
                     self.repaint.store(true, SeqCst);
+                    ATTACHES.fetch_add(1, SeqCst);
                 }
                 host::DETACHED => self.attached.store(false, SeqCst),
                 _ => {}
@@ -445,6 +543,7 @@ impl Control {
 /// A file descriptor handed down to this process, named in environment
 /// variable `var`, if it is open here and of type `kind`: ours from here,
 /// closed with the process and not passed on to what it starts.
+#[cfg(sessions)]
 pub(crate) fn inherited_fd(var: &str, kind: rustix::fs::FileType) -> Option<OwnedFd> {
     let fd: RawFd = std::env::var(var).ok()?.parse().ok()?;
     if fd < 0 {
@@ -462,6 +561,7 @@ pub(crate) fn inherited_fd(var: &str, kind: rustix::fs::FileType) -> Option<Owne
 
 /// The control channel named in the environment, taken once per process;
 /// None if it is not a pipe open here.
+#[cfg(sessions)]
 fn control() -> Option<Arc<Control>> {
     static CONTROL: OnceLock<Option<Arc<Control>>> = OnceLock::new();
     CONTROL
@@ -476,6 +576,7 @@ fn control() -> Option<Arc<Control>> {
 /// A watch on the host of the session named in the environment, for a
 /// TUI a hosted program started on the same terminal; taken once per
 /// process. None if there is no such host, or our terminal is not its.
+#[cfg(sessions)]
 fn watch() -> Option<Arc<Control>> {
     static WATCH: OnceLock<Option<Arc<Control>>> = OnceLock::new();
     WATCH
@@ -537,6 +638,7 @@ impl Session {
         }
     }
 
+    #[cfg(sessions)]
     fn hosted(control: Arc<Control>) -> Self {
         Self::new(Some(control), None)
     }
@@ -547,6 +649,7 @@ impl Session {
 
     /// Plain, inside another TUI's session: repaints after every attach
     /// as the hosted program does, when the host can be reached.
+    #[cfg(sessions)]
     fn nested() -> Self {
         Self::new(watch(), Some(Bypass::Nested))
     }
@@ -573,6 +676,20 @@ impl Session {
             let _ = dir::write_status(dir, id, text);
             *said = text.to_string();
         }
+    }
+
+    /// The value of environment variable `name` (one of
+    /// [`TERMINAL_VARS`]) in the terminal attached last: a hosted program
+    /// may be attached from another terminal than the one it started in,
+    /// and the client passes these on as it attaches. An attached terminal
+    /// without it is None. Before any attach, when plain, and for other
+    /// names, this process's own environment.
+    pub fn terminal_env(&self, name: &str) -> Option<String> {
+        let passed = self.at.as_ref().filter(|_| TERMINAL_VARS.contains(&name));
+        if let Some(vars) = passed.and_then(|(dir, id)| dir::read_terminal_env(dir, id)) {
+            return vars.into_iter().find(|(k, _)| k == name).map(|(_, v)| v);
+        }
+        std::env::var(name).ok()
     }
 
     /// Why the session is plain; None when hosted.
@@ -655,10 +772,9 @@ impl Session {
     pub fn take_repaint(&self) -> bool {
         match &self.control {
             Some(c) => {
-                c.drain();
-                let asked = c.repaint.swap(false, SeqCst);
+                let asked = c.take_repaint();
                 // Owed, it waits for a terminal to be there.
-                asked | (c.attached.load(SeqCst) && self.owed.swap(false, SeqCst))
+                asked | (c.attached() && self.owed.swap(false, SeqCst))
             }
             None => self.owed.swap(false, SeqCst),
         }
@@ -670,10 +786,7 @@ impl Session {
     /// plain, but for a TUI started inside a session.
     pub fn attached(&self) -> bool {
         match &self.control {
-            Some(c) => {
-                c.drain();
-                c.attached.load(SeqCst)
-            }
+            Some(c) => c.attached(),
             None => true,
         }
     }
@@ -700,22 +813,15 @@ impl Session {
     /// that came ends the program once the child is gone, as `kill` does
     /// there.
     pub fn run_child(&self, cmd: &mut Command) -> io::Result<ExitStatus> {
-        use ratatui::crossterm::{execute, terminal};
         self.command(cmd);
-        let screen = self.on.load(SeqCst);
-        if screen {
-            let _ = screen::turn_off();
-            ratatui::restore();
-        }
+        let screen = self.hand_off();
         let armed = self.control.as_ref().and_then(|_| stop::Armed::new());
         let heard = stop::heard();
         let waited = cmd
             .spawn()
             .and_then(|child| stop::wait(child, armed.is_some()));
         if screen {
-            terminal::enable_raw_mode()?;
-            execute!(io::stdout(), terminal::EnterAlternateScreen)?;
-            self.owed.store(true, SeqCst);
+            self.take_back()?;
         }
         let came = armed.is_some() && !heard && stop::heard();
         drop(armed);
@@ -723,6 +829,44 @@ impl Session {
             stop::end_as_by_default();
         }
         waited
+    }
+
+    /// Run `f`, work of this process that writes to the terminal as a
+    /// plain program does (a progress line, a message), off the screen:
+    /// with the screen up, its modes are off, raw mode left and the normal
+    /// screen shown while `f` runs, and the screen is taken back after, to
+    /// be repainted whole. `kill` meanwhile asks the program to stop as
+    /// while the screen is up ([`Session::stop_requested`], which `f` may
+    /// ask). Before the screen is up, or after it, `f` just runs.
+    pub fn off_screen<T>(&self, f: impl FnOnce() -> T) -> io::Result<T> {
+        let screen = self.hand_off();
+        let done = f();
+        if screen {
+            self.take_back()?;
+        }
+        Ok(done)
+    }
+
+    /// With the screen up, hand the terminal over as it was before it
+    /// (modes off, cooked, the normal screen), the stop left armed;
+    /// whether the screen was up.
+    fn hand_off(&self) -> bool {
+        let screen = self.on.load(SeqCst);
+        if screen {
+            let _ = screen::turn_off();
+            ratatui::restore();
+        }
+        screen
+    }
+
+    /// Take the terminal back after [`Session::hand_off`]: raw, in the
+    /// alternate screen, a repaint owed (which turns the modes on again).
+    fn take_back(&self) -> io::Result<()> {
+        use ratatui::crossterm::{execute, terminal};
+        terminal::enable_raw_mode()?;
+        execute!(io::stdout(), terminal::EnterAlternateScreen)?;
+        self.owed.store(true, SeqCst);
+        Ok(())
     }
 
     /// Bring the screen back after an attach: into the alternate screen,
@@ -812,6 +956,7 @@ impl Session {
 }
 
 /// The directory and id of the session named in the environment.
+#[cfg(sessions)]
 fn session_at() -> Option<(PathBuf, String)> {
     let name = std::env::var(SESSION_VAR).ok()?;
     dir::check_name(&name).ok()?;

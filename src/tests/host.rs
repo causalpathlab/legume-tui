@@ -83,8 +83,18 @@ impl Running {
 
 /// Connect and say hello with `size`.
 fn hello(path: &Path, size: Size) -> UnixStream {
+    hello_from(path, size, &[])
+}
+
+/// Connect and say hello with `size`, from a terminal whose environment
+/// has `env`.
+fn hello_from(path: &Path, size: Size, env: &[(&str, &str)]) -> UnixStream {
+    let env: Vec<_> = env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     let s = UnixStream::connect(path).unwrap();
-    wire::write_frame(&s, wire::HELLO, &wire::hello_body(size)).unwrap();
+    wire::write_frame(&s, wire::HELLO, &wire::hello_body(size, &env)).unwrap();
     s
 }
 
@@ -169,6 +179,41 @@ fn repaint_is_asked_only_once_the_client_is_ready() {
     output_until(&mut c, b"x");
     dir::stop(&h.path, true, WAIT).unwrap();
     h.done.join().unwrap();
+}
+
+#[test]
+fn the_attached_terminals_environment_is_there_when_the_program_is_told() {
+    let mut h = host("while read x; do :; done");
+    let (dir, id) = h.shared.at.clone();
+    assert_eq!(dir::read_terminal_env(&dir, &id), None);
+    let first = hello_from(
+        &h.path,
+        Size::default(),
+        &[("TERM", "xterm-kitty"), ("KITTY_WINDOW_ID", "1")],
+    );
+    wire::write_frame(&first, wire::READY, &[]).unwrap();
+    h.wait_told(&[ATTACHED]);
+    let env = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        dir::read_terminal_env(&dir, &id),
+        Some(env(&[("TERM", "xterm-kitty"), ("KITTY_WINDOW_ID", "1")]))
+    );
+    // Another terminal takes over: its own, and nothing of the last one.
+    let second = hello_from(&h.path, Size::default(), &[("TERM", "foot")]);
+    wire::write_frame(&second, wire::READY, &[]).unwrap();
+    h.wait_told(&[ATTACHED]);
+    assert_eq!(
+        dir::read_terminal_env(&dir, &id),
+        Some(env(&[("TERM", "foot")]))
+    );
+    dir::stop(&h.path, true, WAIT).unwrap();
+    h.done.join().unwrap();
+    assert_eq!(dir::read_terminal_env(&dir, &id), None, "taken away");
 }
 
 #[test]
@@ -400,7 +445,7 @@ fn force_kills_a_program_that_ignores_the_stop() {
 fn another_version_is_turned_away() {
     let h = host("while read x; do :; done");
     let mut s = UnixStream::connect(&h.path).unwrap();
-    let mut body = wire::hello_body(Size::default());
+    let mut body = wire::hello_body(Size::default(), &[]);
     body[0] = wire::VERSION + 1;
     wire::write_frame(&s, wire::HELLO, &body).unwrap();
     s.set_read_timeout(Some(WAIT)).unwrap();

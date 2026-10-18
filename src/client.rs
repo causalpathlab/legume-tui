@@ -242,7 +242,11 @@ pub(crate) fn run(sock: UnixStream) -> io::Result<Outcome> {
     let stdin = stdin.as_fd();
     let mut stdout = io::stdout().lock();
     let size = Size::of(stdout.as_fd()).unwrap_or_default();
-    wire::write_frame(&sock, wire::HELLO, &wire::hello_body(size))?;
+    wire::write_frame(
+        &sock,
+        wire::HELLO,
+        &wire::hello_body(size, &wire::terminal_env()),
+    )?;
 
     // Before the terminal goes raw, so no signal finds it raw unhandled.
     let stop = Woken::stops()?;

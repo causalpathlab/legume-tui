@@ -11,6 +11,7 @@ pub fn hosts_by_default() -> bool {
 
 /// Why a session runs plain, in the terminal it started in, as before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Bypass {
     /// `--no-detach` ([`Options::no_detach`]).
     Flag,
@@ -26,6 +27,8 @@ pub enum Bypass {
     NotAsked,
     /// A host was wanted but could not start.
     NoHost,
+    /// Sessions are not supported on this platform.
+    Unsupported,
 }
 
 /// What `session()` does.
@@ -60,7 +63,12 @@ impl Env {
     pub fn read() -> Self {
         let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
         let term = std::env::var("TERM").unwrap_or_default();
+        use std::io::IsTerminal;
+        #[cfg(sessions)]
         let parent = rustix::process::getppid().map(|p| p.as_raw_nonzero().get() as u32);
+        // No host hands a channel down here.
+        #[cfg(not(sessions))]
+        let parent: Option<u32> = None;
         let host = std::env::var(crate::PARENT_VAR)
             .ok()
             .and_then(|v| v.parse::<u32>().ok());
@@ -69,8 +77,8 @@ impl Env {
                 .is_some_and(|v| !v.is_empty() && v != "0"),
             marker: set(crate::SESSION_VAR),
             control: set(crate::CONTROL_VAR) && host.is_some() && host == parent,
-            stdin_tty: rustix::termios::isatty(std::io::stdin()),
-            stdout_tty: rustix::termios::isatty(std::io::stdout()),
+            stdin_tty: std::io::stdin().is_terminal(),
+            stdout_tty: std::io::stdout().is_terminal(),
             multiplexer: set("TMUX")
                 || set("STY")
                 || term.starts_with("screen")

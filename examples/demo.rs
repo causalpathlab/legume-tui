@@ -23,6 +23,7 @@ const TOOL: Tool = Tool::new("demo");
 
 fn main() -> std::io::Result<()> {
     // As some tools do, before anything else: the host must survive it.
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
@@ -98,8 +99,9 @@ fn main() -> std::io::Result<()> {
 /// How long a screen waits for a key, as a rule.
 const TICK: Duration = Duration::from_millis(100);
 
-/// A screen showing `label-repaint-N` and a tick count, until q; it waits
-/// `wait` for a key each round.
+/// A screen showing `label-repaint-N`, a tick count, the keys and the
+/// attached terminal's `TERM_PROGRAM`, until q; it waits `wait` for a key
+/// each round.
 fn screen(screen: &str, label: &str, opts: &Options, wait: Duration) -> std::io::Result<()> {
     let session = TOOL.session(screen, opts)?;
     let mut terminal = session.terminal()?;
@@ -118,9 +120,10 @@ fn screen(screen: &str, label: &str, opts: &Options, wait: Duration) -> std::io:
             ticks += 1;
         }
         let text = format!(
-            "{label}-repaint-{repaints}\ntick {ticks}\ndetach-key={}\nswitch-key={}",
+            "{label}-repaint-{repaints}\ntick {ticks}\ndetach-key={}\nswitch-key={}\nterminal={}",
             legume_tui::detach_key(),
-            legume_tui::switch_key()
+            legume_tui::switch_key(),
+            session.terminal_env("TERM_PROGRAM").unwrap_or_default()
         );
         session.draw(&mut terminal, |f| {
             f.render_widget(Paragraph::new(text), f.area())

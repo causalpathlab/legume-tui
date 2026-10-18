@@ -9,7 +9,13 @@
 //! #[derive(clap::Subcommand)]
 //! enum Commands {
 //!     /// Show a view
-//!     #[command(long_about = format!("Show a view.\n\n{}", cli::SESSION_HELP))]
+//!     #[command(long_about = format!(
+//!         "Show a view.\n\n{}",
+//!         cli::session_help(&TOOL, cli::SessionHelp {
+//!             resume_hint: "`tool view` with no file",
+//!             ..Default::default()
+//!         })
+//!     ))]
 //!     View {
 //!         #[command(flatten)]
 //!         session: cli::SessionArgs,
@@ -44,36 +50,125 @@
 //! ```
 //!
 //! Sessions of a tool are those whose ids are `<tool>-...`. Each command
-//! that takes a session finds it by its label or by its id.
+//! that takes a session finds it by its label or by its id. Where sessions
+//! are not supported, the handlers say so and fail.
 
-use crate::dir::Patience;
-use crate::{client, dir, picker, Options, Tool};
+#[cfg(sessions)]
+use crate::dir::{self, Patience};
+#[cfg(sessions)]
+use crate::{client, picker};
+use crate::{Options, Tool};
 use std::io;
+#[cfg(sessions)]
 use std::time::Duration;
 
 /// How long `kill` waits for a program to wrap up and end (its own work
 /// may take a while to stop), saying so after a few seconds and then
 /// every so often.
+#[cfg(sessions)]
 const STOP_WAIT: Patience = Patience {
     limit: Duration::from_secs(60),
     say: Some((Duration::from_secs(3), Duration::from_secs(10))),
 };
 /// How long `kill --force` waits for it to be gone, saying nothing.
+#[cfg(sessions)]
 const FORCE_WAIT: Patience = Patience {
     limit: Duration::from_secs(3),
     say: None,
 };
 
-/// What a TUI subcommand's long help says about its session, after what
-/// the subcommand does.
-pub const SESSION_HELP: &str = "\
-In an interactive terminal it runs as a detachable session, so its work
-goes on when the connection drops. ctrl+alt+d detaches (the first time,
-it asks for a name; LEGUME_TUI_DETACH_KEY sets another key); ctrl+alt+s
-switches to another session (LEGUME_TUI_SWITCH_KEY). Started again with
-nothing named, it offers the live sessions to return to; `attach`,
-`sessions`, `kill` and `rename` manage them. --no-detach (or
-LEGUME_TUI_NO_DETACH=1) runs it in this terminal only.";
+/// The width [`session_help`] wraps to by default.
+pub const HELP_WIDTH: usize = 70;
+
+/// What a TUI subcommand's long help says about its session, in the
+/// tool's words ([`session_help`]).
+#[derive(Clone, Debug)]
+pub struct SessionHelp<'a> {
+    /// What goes on when the connection drops, with its verb: `the fits
+    /// go on`; `its work goes on` when None.
+    pub what_goes_on: Option<&'a str>,
+    /// Who offers the live sessions to return to: `` `tool view` with no
+    /// file ``, or by default `Started again with nothing named, it`.
+    pub resume_hint: &'a str,
+    /// Sentences added at the end, as `` `?` shows the keys in effect.``
+    pub more: Option<&'a str>,
+    /// The longest line ([`HELP_WIDTH`] by default).
+    pub width: usize,
+}
+
+impl Default for SessionHelp<'_> {
+    fn default() -> Self {
+        Self {
+            what_goes_on: None,
+            resume_hint: "Started again with nothing named, it",
+            more: None,
+            width: HELP_WIDTH,
+        }
+    }
+}
+
+/// The paragraph a TUI subcommand's long help ends with, about its
+/// session, said as `help` has it and wrapped ([`wrap`]): how it runs, the
+/// detach and switch keys, how to return, the subcommands, and how to run
+/// it plain.
+pub fn session_help(tool: &Tool, help: SessionHelp<'_>) -> String {
+    let mut text = format!(
+        "In an interactive terminal it runs as a detachable session, so {} \
+         when the connection drops. ctrl+alt+d detaches (the first time, it \
+         asks for a name; LEGUME_TUI_DETACH_KEY sets another key); ctrl+alt+s \
+         switches to another session (LEGUME_TUI_SWITCH_KEY). {} offers the \
+         live sessions to return to; `{} attach`, `sessions`, `kill` and \
+         `rename` manage them. --no-detach (or LEGUME_TUI_NO_DETACH=1) runs \
+         it in this terminal only.",
+        help.what_goes_on.unwrap_or("its work goes on"),
+        help.resume_hint,
+        tool.name(),
+    );
+    if let Some(more) = help.more {
+        text.push(' ');
+        text.push_str(more);
+    }
+    wrap(&text, help.width)
+}
+
+/// `text` with each paragraph (a blank line apart) broken into lines of
+/// at most `width` columns, between words and never inside a `` `quoted
+/// command` ``. A word longer than `width` has a line of its own.
+pub fn wrap(text: &str, width: usize) -> String {
+    text.split("\n\n")
+        .map(|p| wrap_paragraph(p, width))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn wrap_paragraph(paragraph: &str, width: usize) -> String {
+    // Words, those inside backticks kept together.
+    let mut units: Vec<String> = Vec::new();
+    for word in paragraph.split_whitespace() {
+        match units.last_mut() {
+            Some(open) if open.matches('`').count() % 2 == 1 => {
+                open.push(' ');
+                open.push_str(word);
+            }
+            _ => units.push(word.to_string()),
+        }
+    }
+    let mut out = String::new();
+    let mut line = 0;
+    for unit in units {
+        let n = unit.chars().count();
+        if line > 0 && line + 1 + n > width {
+            out.push('\n');
+            line = 0;
+        } else if line > 0 {
+            out.push(' ');
+            line += 1;
+        }
+        out.push_str(&unit);
+        line += n;
+    }
+    out
+}
 
 /// The long help of the session subcommands, for [`about`].
 #[derive(Clone, Debug)]
@@ -179,6 +274,7 @@ pub struct RenameArgs {
 /// Attach this terminal to one of `tool`'s sessions; with none named and
 /// several live, the one picked. Returns after a detach; when the program
 /// ends with a failure, exits with its status.
+#[cfg(sessions)]
 pub fn attach(tool: &Tool, args: &AttachArgs) -> io::Result<()> {
     let dir = crate::runtime_dir()?;
     let terminal = rustix::termios::isatty(io::stdin()) && rustix::termios::isatty(io::stdout());
@@ -205,6 +301,7 @@ pub fn attach(tool: &Tool, args: &AttachArgs) -> io::Result<()> {
 /// Print `tool`'s live sessions, one a line: label and id (`label (id)`,
 /// or the id alone), state, age, pid, command line and status, tab
 /// separated. Stale sockets are removed on the way.
+#[cfg(sessions)]
 pub fn sessions(tool: &Tool) -> io::Result<()> {
     let dir = crate::runtime_dir()?;
     let live = dir::live(&dir, &tool.prefix())?;
@@ -228,6 +325,7 @@ pub fn sessions(tool: &Tool) -> io::Result<()> {
 /// Stop one of `tool`'s sessions: SIGTERM, which the program takes as its
 /// quit key, or with `--force` SIGKILL. Waits for it to end, up to a
 /// minute, saying it does after a few seconds.
+#[cfg(sessions)]
 pub fn kill(tool: &Tool, args: &KillArgs) -> io::Result<()> {
     let dir = crate::runtime_dir()?;
     let found = dir::pick(&dir, &tool.prefix(), args.name.as_deref())?;
@@ -248,6 +346,7 @@ pub fn kill(tool: &Tool, args: &KillArgs) -> io::Result<()> {
 }
 
 /// Give one of `tool`'s sessions a new label.
+#[cfg(sessions)]
 pub fn rename(tool: &Tool, args: &RenameArgs) -> io::Result<()> {
     let dir = crate::runtime_dir()?;
     let found = dir::pick(&dir, &tool.prefix(), Some(&args.session))?;
@@ -255,3 +354,41 @@ pub fn rename(tool: &Tool, args: &RenameArgs) -> io::Result<()> {
     println!("{} is now {}", found.name, args.label);
     Ok(())
 }
+
+/// Where sessions are not supported: the session subcommands say so.
+#[cfg(not(sessions))]
+mod unsupported {
+    use super::*;
+
+    fn unsupported(tool: &Tool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "{} sessions are not supported on this platform",
+                tool.name()
+            ),
+        ))
+    }
+
+    pub fn attach(tool: &Tool, _: &AttachArgs) -> io::Result<()> {
+        unsupported(tool)
+    }
+
+    pub fn sessions(tool: &Tool) -> io::Result<()> {
+        unsupported(tool)
+    }
+
+    pub fn kill(tool: &Tool, _: &KillArgs) -> io::Result<()> {
+        unsupported(tool)
+    }
+
+    pub fn rename(tool: &Tool, _: &RenameArgs) -> io::Result<()> {
+        unsupported(tool)
+    }
+}
+#[cfg(not(sessions))]
+pub use unsupported::{attach, kill, rename, sessions};
+
+#[cfg(test)]
+#[path = "tests/cli.rs"]
+mod tests;

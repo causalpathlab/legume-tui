@@ -15,10 +15,11 @@ use std::io::{self, Read};
 use std::os::unix::net::UnixStream;
 
 /// Bumped when a frame changes meaning; a host refuses other versions.
-pub(crate) const VERSION: u8 = 4;
+pub(crate) const VERSION: u8 = 5;
 
 // Client to host.
-/// Attach: the version, then the terminal's [`Size`].
+/// Attach: the version, the terminal's [`Size`], then what of its
+/// environment says which terminal it is ([`encode_env`]).
 pub(crate) const HELLO: u8 = 1;
 /// The terminal is raw: output and the repaint request may start.
 pub(crate) const READY: u8 = 2;
@@ -89,11 +90,47 @@ pub(crate) fn seal(tag: u8, mut buf: Vec<u8>) -> Vec<u8> {
     buf
 }
 
-/// What a client says [`HELLO`] with: the version and its terminal's size.
-pub(crate) fn hello_body(size: Size) -> Vec<u8> {
+/// What a client says [`HELLO`] with: the version, its terminal's size
+/// and `env`.
+pub(crate) fn hello_body(size: Size, env: &[(String, String)]) -> Vec<u8> {
     let mut body = vec![VERSION];
     body.extend_from_slice(&size.encode());
+    body.extend_from_slice(&encode_env(env));
     body
+}
+
+/// What a [`HELLO`] says of the terminal's environment.
+pub(crate) fn hello_env(body: &[u8]) -> Vec<(String, String)> {
+    decode_env(body.get(1 + 8..).unwrap_or_default())
+}
+
+/// This process's values of [`crate::TERMINAL_VARS`], those it has.
+pub(crate) fn terminal_env() -> Vec<(String, String)> {
+    crate::TERMINAL_VARS
+        .iter()
+        .filter_map(|&k| Some((k.to_string(), std::env::var(k).ok()?)))
+        .collect()
+}
+
+/// Environment variables as `NAME=value`, each ended by a NUL.
+pub(crate) fn encode_env(vars: &[(String, String)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (k, v) in vars {
+        out.extend_from_slice(format!("{k}={v}").as_bytes());
+        out.push(0);
+    }
+    out
+}
+
+/// What [`encode_env`] wrote; an entry not of that form is left out.
+pub(crate) fn decode_env(bytes: &[u8]) -> Vec<(String, String)> {
+    bytes
+        .split(|&b| b == 0)
+        .filter_map(|e| {
+            let (k, v) = std::str::from_utf8(e).ok()?.split_once('=')?;
+            (!k.is_empty()).then(|| (k.to_string(), v.to_string()))
+        })
+        .collect()
 }
 
 /// The send flags that make a peer that is gone an error, not a SIGPIPE.
