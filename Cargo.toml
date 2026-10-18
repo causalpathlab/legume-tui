@@ -1,0 +1,44 @@
+[package]
+name = "legume-tui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
+description = "Detachable terminal sessions for the legume tools: leave a TUI and come back to it"
+readme = "README.md"
+repository = "https://github.com/causalpathlab/legume-tui"
+keywords = ["tui", "terminal", "pty", "detach", "ratatui"]
+categories = ["command-line-interface"]
+publish = false
+
+[features]
+default = ["clap", "graphics"]
+# `attach`, `sessions` and `kill` as clap arguments a tool adds to its CLI.
+clap = ["dep:clap"]
+# The graphics probe: which image protocol the attached terminal speaks.
+graphics = ["dep:ratatui-image"]
+# A harness that drives a tool's TUI through pseudo-terminals, for its tests.
+testing = ["dep:tempfile"]
+
+[dependencies]
+ratatui = "0.30"
+ratatui-image = { version = "11.1", optional = true, default-features = false, features = ["crossterm"] }
+clap = { version = "4.5.20", optional = true, features = ["derive"] }
+tempfile = { version = "3.2", optional = true }
+
+# Pseudo-terminals, sessions and signals; Unix only.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["pty", "termios", "fs", "process", "event", "net"] }
+signal-hook = { version = "0.3", default-features = false }
+
+[[example]]
+name = "demo"
+required-features = ["clap"]
+
+[dev-dependencies]
+tempfile = "3.2"
+# The testing harness, for the end-to-end tests.
+legume-tui = { path = ".", default-features = false, features = ["testing"] }
+# SIGPIPE back to its default in the demo and a test, as some tools do.
+libc = "0.2"

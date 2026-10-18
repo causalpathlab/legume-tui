@@ -1,0 +1,7 @@
+/target/
+**/*.rs.bk
+.DS_Store
+*.swp
+
+# Not tracked; resolved fresh on each build
+Cargo.lock
