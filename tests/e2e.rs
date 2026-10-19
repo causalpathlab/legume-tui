@@ -491,10 +491,52 @@ fn an_error_at_the_start_stays_in_sight() {
     assert_eq!(t.exit_code(), 1);
     t.wait_for("demo-fail: no such input");
     t.wait_for("[demo-fail-1 exited with status 1]");
-    // On the user's own screen, which nothing left.
+    // On the user's own screen, which nothing left, and in sight there,
+    // whatever backtrace setting the test runner has.
     assert!(!t.text().contains("\x1b[?1049"), "{:?}", t.text());
+    t.wait_screen("demo-fail: no such input");
     assert!(t.cooked());
     assert!(dir.is_empty());
+}
+
+#[test]
+fn a_long_error_at_the_start_reaches_the_terminal_whole_before_the_end_is_said() {
+    // Several KB said at once as the program ends, more than the screen
+    // holds: all of it relayed, in order, and then the client's word on
+    // the end, on the screen's last lines.
+    let dir = private();
+    let mut t = dir.term(&["fail"], &[("RUST_BACKTRACE", "1")]);
+    assert_eq!(t.exit_code(), 1);
+    t.wait_for("[demo-fail-1 exited with status 1]");
+    let text = t.text();
+    let first = text.find("demo-fail: no such input").expect("the error");
+    let frame = text.find("199: demo::frame_199").expect("the last frame");
+    let last = text
+        .find("demo-fail: end of trace")
+        .expect("the trace's end");
+    let end = text.find("[demo-fail-1 exited").unwrap();
+    assert!(first < frame && frame < last && last < end, "{text:?}");
+    assert!(text.len() > 8 * 1024, "{} bytes", text.len());
+    let screen = t.screen();
+    assert!(screen.contains("demo-fail: end of trace"), "{screen}");
+    assert!(
+        screen.contains("[demo-fail-1 exited with status 1]"),
+        "{screen}"
+    );
+    assert!(!t.alternate() && t.cooked());
+    assert!(dir.is_empty());
+}
+
+#[test]
+fn the_terminal_mode_is_read_after_the_program_is_gone() {
+    // The tool, a session leader on the terminal, has ended: its mode is
+    // still read (macOS revokes the test's own handle on that terminal
+    // when its controlling process ends).
+    let dir = private();
+    let mut t = dir.term(&["which"], &[]);
+    t.status();
+    assert!(t.child.try_wait().unwrap().is_some());
+    assert!(t.cooked());
 }
 
 #[test]

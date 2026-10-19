@@ -8,7 +8,8 @@
 //! `demo attach|sessions|kill [name]` and `demo rename name label` are the
 //! handlers. `demo idle` waits a minute for a key each round, and `demo
 //! first` runs the nested screen before a screen of its own. Three
-//! misbehave on purpose: `demo fail` says an error and exits at once,
+//! misbehave on purpose: `demo fail` says an error (with a long trace
+//! after it when `RUST_BACKTRACE` is set) and exits at once,
 //! `demo slow` loads for a long time before its screen, and `demo stall`
 //! stops reading its input.
 //!
@@ -74,6 +75,16 @@ fn main() -> std::io::Result<()> {
         Some("fail") => {
             let _session = TOOL.session("fail", &Options::default())?;
             eprintln!("demo-fail: no such input");
+            // With a backtrace asked for, a long trace after it, as a
+            // `main` returning an error says one: several KB, more lines
+            // than a screen.
+            if std::env::var_os("RUST_BACKTRACE").is_some_and(|v| v != "0") {
+                eprintln!("\nStack backtrace:");
+                for i in 0..200 {
+                    eprintln!("  {i:>3}: demo::frame_{i}\n             at ./src/frame.rs:{i}:5");
+                }
+                eprintln!("demo-fail: end of trace");
+            }
             std::process::exit(1);
         }
         Some("slow") => {

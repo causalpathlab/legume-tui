@@ -79,6 +79,20 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.2
+
+- `testing::Private::command` (and every terminal and run made from it)
+  no longer passes the test runner's `RUST_BACKTRACE` and
+  `RUST_LIB_BACKTRACE` on to the tool. With CI's `RUST_BACKTRACE=1`, an
+  error a tool ends with was followed by a trace longer than the test
+  terminal, scrolling the error off the modelled screen, so a test that
+  looked for it there failed on CI only. A test that wants a backtrace
+  passes it in `env`. The sessions themselves were right: the whole error
+  and the end of the session reach the terminal, in order.
+- `testing::Term::cooked` reads the terminal's mode through the test's
+  own end of the pty. On macOS the tool's end is revoked once the tool
+  (its session leader) has ended, and reading it there failed (ENOTTY).
+
 ## 0.3.1
 
 - `help_keys()` says what each key does in 0.2's words again

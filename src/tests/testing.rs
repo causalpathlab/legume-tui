@@ -67,3 +67,17 @@ fn the_rest_of_the_output_is_not_a_query() {
     let (_, left) = answered(&Replies::plain(), b"text\x1b[", &[]);
     assert_eq!(left, 2);
 }
+
+#[test]
+fn the_tool_runs_without_the_test_runners_backtrace_setting() {
+    // A runner with RUST_BACKTRACE set (as CI does) would have a tool's
+    // error end in a trace that scrolls the error off the screen.
+    let cmd = Private::new("tool").command();
+    let envs: Vec<_> = cmd.get_envs().collect();
+    for name in ["RUST_BACKTRACE", "RUST_LIB_BACKTRACE"] {
+        assert!(
+            envs.contains(&(std::ffi::OsStr::new(name), None)),
+            "{name} not removed: {envs:?}"
+        );
+    }
+}

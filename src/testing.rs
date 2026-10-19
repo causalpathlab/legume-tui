@@ -78,13 +78,19 @@ impl Private {
     }
 
     /// The tool, its sessions here, in a clean environment: no session,
-    /// multiplexer or opt-out around it.
+    /// multiplexer or opt-out around it, and no backtrace setting from the
+    /// test runner (CI's `RUST_BACKTRACE=1` would have an error the tool
+    /// ends with followed by a trace longer than the screen, so what a
+    /// test looks for on the screen depended on where it ran). A test
+    /// that wants one passes it in `env`.
     pub fn command(&self) -> Command {
         let mut cmd = Command::new(&self.exe);
         cmd.env(crate::DIR_VAR, self.path())
             .env("TERM", "xterm-256color")
             .env_remove("TMUX")
             .env_remove("STY")
+            .env_remove("RUST_BACKTRACE")
+            .env_remove("RUST_LIB_BACKTRACE")
             .env_remove(crate::SESSION_VAR)
             .env_remove(crate::NO_DETACH_VAR);
         cmd
@@ -153,7 +159,7 @@ impl Private {
         }
         Term {
             master,
-            slave,
+            _slave: slave,
             seen,
             screen,
             child,
@@ -477,7 +483,9 @@ enum Asked {
 pub struct Term {
     /// Our end: what is written to it is typed.
     pub master: File,
-    slave: OwnedFd,
+    /// The tool's end, held open so that on Linux ours reads on to the
+    /// last of what the tool wrote after it ends, with no error between.
+    _slave: OwnedFd,
     seen: Arc<Mutex<Vec<u8>>>,
     /// What it shows, as a terminal would.
     screen: Arc<Mutex<vt100::Parser>>,
@@ -593,9 +601,12 @@ impl Term {
         self.status().code().unwrap_or(-1)
     }
 
-    /// Whether the terminal is back in its line mode.
+    /// Whether the terminal is back in its line mode. Read through our
+    /// end, which shares the mode with the tool's: macOS revokes the
+    /// tool's end, our handle on it too, once the tool (its session
+    /// leader) has ended.
     pub fn cooked(&self) -> bool {
-        let t = rustix::termios::tcgetattr(&self.slave).unwrap();
+        let t = rustix::termios::tcgetattr(&self.master).unwrap();
         t.local_modes.contains(rustix::termios::LocalModes::ICANON)
     }
 }
