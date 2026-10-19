@@ -58,7 +58,8 @@ legume-tui = "0.3"
    `id`, `stop`), so a hangup reaches it. `child::Bar::track`, fed each
    word the child says, follows its progress bar: where it stands, the
    trend of the scores it reports (`key=value`, one point a message), and
-   whether it is still on the child's screen; `child::gauge` draws it as
+   whether it is still on the child's screen (a clear, `Said::Cleared`, or
+   a log line hides it until its next frame); `child::gauge` draws it as
    text, the trend as a sparkline.
 7. Work outside the screen: `session.off_screen(|| ..)` for work that
    writes to the terminal as a plain program does (the screen handed over

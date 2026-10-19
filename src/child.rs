@@ -36,7 +36,7 @@
 //! ```
 
 mod bar;
-pub use bar::{gauge, spark, Bar, TREND};
+pub use bar::{gauge, spark, Bar, GRACE, TREND};
 
 use rustix::process::{kill_process, kill_process_group, Pid, Signal};
 use std::io::{self, Read};
@@ -252,6 +252,12 @@ pub enum Said {
     Line(String),
     /// A frame of a progress bar.
     Progress(Progress),
+    /// A progress bar erased, with no frame of it after the erase in what
+    /// was read: finished and cleared, or a redraw a read cut in two (its
+    /// frame then follows). A redraw read whole is not said, nor a bar a
+    /// log line takes the place of: the line says it. [`Bar::visible`]
+    /// gives a clear a [`GRACE`] before taking the bar off.
+    Cleared,
 }
 
 /// Where a progress bar stands: `pos` of `len` (0 for a spinner), and
@@ -391,25 +397,18 @@ fn reason(last: &str, ended: &str) -> String {
 
 /// Read a child's stderr to the end, in pieces split at `\r` and `\n`
 /// (a progress bar redraws after a `\r`, with no new line), each as
-/// [`log_line`] trims it: a bar frame as a [`Said::Progress`], anything
-/// else as a [`Said::Line`]. Returns the last line.
+/// [`log_line`] trims it: a bar frame as a [`Said::Progress`], a bar
+/// erased and not redrawn as [`Said::Cleared`], anything else as a
+/// [`Said::Line`]. Returns the last line.
 pub fn follow(log: Option<impl Read>, mut each: impl FnMut(Said)) -> String {
-    let mut last = String::new();
-    let Some(mut log) = log else {
-        return last;
+    let mut words = Words {
+        each: &mut each,
+        last: String::new(),
+        frame: None,
+        shows: Shows::Gone,
     };
-    let mut said = |piece: &[u8]| {
-        let line = log_line(&String::from_utf8_lossy(piece));
-        if line.is_empty() {
-            return;
-        }
-        match progress_of(&line) {
-            Some(p) => each(Said::Progress(p)),
-            None => {
-                last.clone_from(&line);
-                each(Said::Line(line));
-            }
-        }
+    let Some(mut log) = log else {
+        return words.last;
     };
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
@@ -423,15 +422,102 @@ pub fn follow(log: Option<impl Read>, mut each: impl FnMut(Said)) -> String {
         };
         for &b in &buf[..n] {
             if b == b'\r' || b == b'\n' {
-                said(&pending);
+                words.piece(&pending);
                 pending.clear();
             } else {
                 pending.push(b);
             }
         }
+        words.settle(&pending);
     }
-    said(&pending);
-    last
+    words.piece(&pending);
+    words.last
+}
+
+/// What a line of a child's terminal can hold and still be a bar's: a
+/// line's width in cells, with room for its colours.
+const LINE_BYTES: usize = 8 * COLUMNS as usize;
+
+/// [`follow`]'s words as they are said, and what the child's current line
+/// shows. A bar stays on screen until its line is erased or a log line
+/// takes its place, and is back once a frame of it is the current line.
+struct Words<'a, F: FnMut(Said)> {
+    each: &'a mut F,
+    last: String,
+    /// The last frame said.
+    frame: Option<Progress>,
+    shows: Shows,
+}
+
+/// What a child's current line shows, as last said.
+#[derive(Clone, Copy, PartialEq)]
+enum Shows {
+    /// Its bar, as its last frame drew it.
+    Bar,
+    /// Its bar erased, with no frame after yet: a redraw, or a clear.
+    Erased,
+    /// No bar: cleared, or a log line in its place.
+    Gone,
+}
+
+impl<F: FnMut(Said)> Words<'_, F> {
+    /// One piece of the stream, ended by a `\r` or `\n`.
+    fn piece(&mut self, piece: &[u8]) {
+        let (line, erases) = words_of(piece);
+        if line.is_empty() {
+            // Terminal control alone: it may erase the line, or nothing.
+            if erases && self.shows == Shows::Bar {
+                self.shows = Shows::Erased;
+            }
+            return;
+        }
+        match progress_of(&line) {
+            Some(p) => {
+                self.shows = Shows::Bar;
+                self.frame = Some(p.clone());
+                (self.each)(Said::Progress(p));
+            }
+            None => {
+                self.shows = Shows::Gone;
+                self.last.clone_from(&line);
+                (self.each)(Said::Line(line));
+            }
+        }
+    }
+
+    /// All read for now: what the current line, `tail` (not yet ended),
+    /// shows. A frame of the bar last said shows it again; an erase with
+    /// no frame after it leaves the bar gone.
+    fn settle(&mut self, tail: &[u8]) {
+        if tail.len() > LINE_BYTES {
+            return;
+        }
+        let (line, erases) = words_of(tail);
+        match (progress_of(&line), self.shows) {
+            (Some(drawn), Shows::Gone) => {
+                // Its last frame, if this bar is that one: the frame drawn
+                // is said whole when it ends.
+                let back = self.frame.as_ref().filter(|f| bar::same_bar(f, &drawn));
+                if let Some(f) = back.cloned() {
+                    self.shows = Shows::Bar;
+                    (self.each)(Said::Progress(f));
+                }
+            }
+            (Some(_), _) => self.shows = Shows::Bar,
+            (None, shows) if shows == Shows::Erased || (shows == Shows::Bar && erases) => {
+                self.shows = Shows::Gone;
+                (self.each)(Said::Cleared);
+            }
+            (None, _) => {}
+        }
+    }
+}
+
+/// A piece of the stream's message, and whether its terminal control
+/// erases part of the screen.
+fn words_of(bytes: &[u8]) -> (String, bool) {
+    let (text, erases) = plain(&String::from_utf8_lossy(bytes));
+    (message(&text), erases)
 }
 
 /// Read a child's log to the end a line at a time, every line to `each`;
@@ -477,20 +563,31 @@ pub fn progress_of(line: &str) -> Option<Progress> {
 /// A log line without terminal colours or its "[time LEVEL module] "
 /// prefix: the message is what matters on a status line.
 pub fn log_line(line: &str) -> String {
+    message(&plain(line).0)
+}
+
+/// `line` without its terminal control, and whether that control erases
+/// part of the screen: a CSI sequence ending in `K` (in the line) or `J`
+/// (in the display), as a bar cleared writes.
+fn plain(line: &str) -> (String, bool) {
     let mut plain = String::with_capacity(line.len());
+    let mut erases = false;
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
         if c != '\u{1b}' {
             plain.push(c);
         } else if chars.next() == Some('[') {
             // A CSI sequence runs to its final byte.
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
+            if let Some(end) = chars.by_ref().find(|c| ('@'..='~').contains(c)) {
+                erases |= matches!(end, 'K' | 'J');
             }
         }
     }
+    (plain, erases)
+}
+
+/// A plain line's message: trimmed, without a "[time LEVEL module] " head.
+fn message(plain: &str) -> String {
     let t = plain.trim();
     match t.split_once("] ") {
         Some((head, msg)) if head.starts_with('[') => msg.trim().to_string(),
