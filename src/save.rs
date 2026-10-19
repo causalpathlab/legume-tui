@@ -551,9 +551,17 @@ impl<S: Copy + PartialEq> SaveDialog<S> {
         t: &T,
         look: &Look,
     ) {
-        let lines = self.lines(t, look);
+        let mut lines = self.lines(t, look);
         let w = 84.min(area.width);
-        let h = (lines.len() as u16 + 2).min(area.height);
+        let wrap = Wrap { trim: false };
+        // As tall as the lines once wrapped: a long file name takes rows.
+        let rows = Paragraph::new(lines.clone())
+            .wrap(wrap)
+            .line_count(w.saturating_sub(2).max(1));
+        let h = u16::try_from(rows)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .min(area.height);
         let r = Rect::new(
             area.x + (area.width - w) / 2,
             area.y + (area.height - h) / 2,
@@ -564,7 +572,23 @@ impl<S: Copy + PartialEq> SaveDialog<S> {
         let block = Block::bordered().border_style(look.border).style(look.page);
         let body = block.inner(r);
         f.render_widget(block, r);
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
+        // Too tall for the screen: the keys keep the bottom row.
+        if rows > usize::from(body.height) && lines.len() > 1 && body.height > 1 {
+            let keys = lines.pop().unwrap_or_default();
+            let top = Rect {
+                height: body.height - 1,
+                ..body
+            };
+            let bottom = Rect {
+                y: body.y + body.height - 1,
+                height: 1,
+                ..body
+            };
+            f.render_widget(Paragraph::new(lines).wrap(wrap), top);
+            f.render_widget(Paragraph::new(keys), bottom);
+        } else {
+            f.render_widget(Paragraph::new(lines).wrap(wrap), body);
+        }
     }
 }
 
