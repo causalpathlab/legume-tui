@@ -598,11 +598,11 @@ Other wording may change.
   labels from the keyboard, entered with `L`: Tab and BackTab pick a
   label, the arrows nudge it half a line (Shift: two), Backspace puts it
   back and Esc leaves. `nav_key` reads the zoom, pan and fit keys.
+  `chrome::Chrome`: page, hint and menu styles from a theme, or the
+  terminal's own with none, bordered popups, toasts and scrolled lists.
 - `map-display`: `map` and `graphics`, for a map on the terminal:
   `map::display::cell` (frame pixels per cell), `stroke_floor` and
   `fit_protocol`, the frame fitted to an area through ratatui-image.
-  `chrome::Chrome`: page, hint and menu styles from a theme, or the
-  terminal's own with none, bordered popups, toasts and scrolled lists.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`
