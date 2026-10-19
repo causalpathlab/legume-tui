@@ -23,11 +23,13 @@
 //! pixels it covers. Averages are taken in linear light, as the renderer
 //! mixes colours.
 //!
-//! Ported from pinto's `src/view/cellart.rs`. The frame's pixels are read
-//! in linear light as they are held, which for a frame made from bytes
-//! ([`Frame::from_srgba`]) is what pinto's decoding of those bytes gave.
+//! Ported from pinto's `src/view/cellart.rs`. pinto decodes the frame's
+//! sRGB bytes; here each pixel goes through the bytes the frame encodes it
+//! to ([`Frame::to_image`], senna's table for a frame drawn from scratch)
+//! and back, so the cells start from the bytes kitty would be sent, and a
+//! frame made from bytes ([`Frame::from_srgba`]) reads as pinto's did.
 
-use crate::map::colour::{encode, Lin, Srgb};
+use crate::map::colour::{encode, to_linear, Lin, Srgb};
 use crate::map::raster::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -187,7 +189,8 @@ fn rgb(c: Srgb) -> Color {
 }
 
 /// Glyph pixels of cell `(c, r)` in linear light, row-major: each the mean
-/// of the frame pixels it covers. Outside the frame reads as background.
+/// of the frame pixels it covers, as the frame's bytes decode. Outside the
+/// frame reads as background.
 fn sample(
     frame: &Frame,
     glyphs: Glyphs,
@@ -207,11 +210,11 @@ fn sample(
             let mut n = 0f32;
             for y in rows.clone() {
                 for x in cols.clone() {
-                    let p = if x < frame.w && y < frame.h {
+                    let p = to_linear(frame.to_srgb(if x < frame.w && y < frame.h {
                         px[y * frame.w + x]
                     } else {
                         bg
-                    };
+                    }));
                     for ch in 0..3 {
                         sum[ch] += p[ch];
                     }

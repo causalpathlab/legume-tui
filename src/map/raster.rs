@@ -98,6 +98,7 @@ impl Frame {
     }
 
     /// The pixels in linear light, row-major.
+    #[cfg(feature = "map-kitty")]
     pub(crate) fn pixels(&self) -> &[Lin] {
         &self.px
     }
@@ -117,6 +118,15 @@ impl Frame {
     /// The text kept so far.
     pub fn take_text(&mut self) -> Vec<TextRun> {
         self.text.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// `c` as the byte this frame encodes it to in [`Frame::to_image`].
+    #[cfg(feature = "map-kitty")]
+    pub(crate) fn to_srgb(&self, c: Lin) -> Srgb {
+        match self.encoding {
+            Encoding::Senna => c.map(encode_senna),
+            Encoding::Exact => to_srgb(c),
+        }
     }
 
     #[must_use]

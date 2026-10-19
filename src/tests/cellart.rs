@@ -2,7 +2,7 @@
 //! `src/view/tests/cellart.rs`.
 
 use super::*;
-use crate::map::colour::{encode, linear};
+use crate::map::colour::{encode, encode_senna, linear};
 use crate::map::theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -172,4 +172,24 @@ fn glyph_sets_keep_their_names() {
     assert_eq!(Glyphs::HalfBlocks.name(), "half-blocks");
     assert_eq!(Glyphs::Quadrants.name(), "quadrants");
     assert_eq!(Glyphs::Symbols.name(), "symbols");
+}
+
+#[test]
+fn cells_show_the_bytes_a_drawn_frame_encodes_to() {
+    // A linear value that senna's table, which a frame drawn from scratch
+    // encodes through, takes one byte lower than the exact table: the cell
+    // shows the frame's byte, as kitty would be sent it.
+    let c = (0..4096)
+        .map(|i| i as f32 / 4096.)
+        .find(|&c| encode_senna(c) != encode(c))
+        .expect("a value the tables disagree on");
+    let frame = Frame::from_canvas(1, 2, vec![[c, c, c]; 2], [c, c, c]);
+    let byte = frame.to_image().into_raw()[0];
+    assert_eq!(byte, encode_senna(c));
+    let cells = fit_cells(&frame, Glyphs::HalfBlocks, 1, 1);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+    (&cells).render(buf.area, &mut buf);
+    let cell = &buf[(0, 0)];
+    assert_eq!(cell.bg, Color::Rgb(byte, byte, byte));
+    assert_eq!(cell.fg, Color::Rgb(byte, byte, byte));
 }
