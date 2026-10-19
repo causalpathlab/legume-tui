@@ -80,7 +80,7 @@ use plain::{dir, session_at, stop, Control};
 pub mod chart;
 #[cfg(all(feature = "child", unix))]
 pub mod child;
-#[cfg(feature = "map")]
+#[cfg(feature = "style")]
 pub mod chrome;
 #[cfg(feature = "clap")]
 pub mod cli;
@@ -94,7 +94,7 @@ pub mod graphics;
 pub mod logs;
 #[cfg(any(feature = "save", feature = "gallery"))]
 pub mod look;
-#[cfg(feature = "map")]
+#[cfg(feature = "style")]
 pub mod map;
 #[cfg(feature = "save")]
 pub mod save;
