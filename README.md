@@ -79,6 +79,23 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.5
+
+0.3.4 was not published: its changes (below) ship in this release.
+
+- A TUI started inside a session (a hosted program's own screen, on the
+  same terminal) hears from the host whether a terminal is attached over
+  a watch, which the host answers with the state now. Under load that
+  word came after the TUI's first round had read nothing, so it skipped
+  its first draw and then waited for a key as long as it asked (a minute,
+  for some), the word unread: a blank screen until a key. The TUI now
+  waits up to a second for that word as it starts, and until it comes,
+  no round waits longer than a second. Later words need no wake of their
+  own: an attach signals the terminal's foreground, which is that TUI.
+- The demo's program that stops reading its input draws its one screen
+  once a client is attached; under load its draw came first and was
+  dropped, and its end-to-end test waited in vain.
+
 ## 0.3.4
 
 - A session that cannot start (a socket path too long for the system, a
@@ -561,8 +578,9 @@ canned replies (tmux passthroughs left unanswered), and an end-to-end run of `ex
 pseudo-terminals (launch, detach, attach and repaint, a lost client, a
 client stopped by a signal, nested launches, the resume picker, naming on
 detach, rename, a bare attach picking, the switch key in both encodings,
-other keys, kill, kill waking a screen that waits long for a key, kill
-passed on to a child run before the screen, a program that fails at once,
+other keys, kill, kill waking a screen that waits long for a key, a
+nested screen that waits long for a key drawing soon after a host that
+answers its watch late, kill passed on to a child run before the screen, a program that fails at once,
 one slow to start its screen, one that stops reading its input, a signal
 in the switch picker, what a program leaves said once by the attached
 terminal (and not by a `kill` from another one), `kill`, `sessions` or

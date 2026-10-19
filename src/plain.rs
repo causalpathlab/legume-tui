@@ -15,6 +15,10 @@ impl Control {
     pub(crate) fn take_repaint(&self) -> bool {
         match *self {}
     }
+
+    pub(crate) fn untold(&self) -> bool {
+        match *self {}
+    }
 }
 
 /// Never in a session here.
