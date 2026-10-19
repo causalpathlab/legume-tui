@@ -76,7 +76,17 @@ pub fn shrink<'a>(picture: impl Into<Picture<'a>>, width: u32) -> RgbaImage {
 
 /// Write `img` to `path` as an 8-bit RGBA PNG.
 pub fn write_png(img: &RgbaImage, path: &Path) -> io::Result<()> {
-    img.save_with_format(path, ImageFormat::Png)
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+    // Fast compression, as pinto's thumbnails were written: they are small.
+    let out = io::BufWriter::new(std::fs::File::create(path)?);
+    PngEncoder::new_with_quality(out, CompressionType::Fast, FilterType::Adaptive)
+        .write_image(
+            img.as_raw(),
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgba8,
+        )
         .map_err(io::Error::other)
 }
 
@@ -86,7 +96,7 @@ pub fn read_png(path: &Path) -> Option<RgbaImage> {
     let bytes = std::fs::read(path).ok()?;
     image::load_from_memory_with_format(&bytes, ImageFormat::Png)
         .ok()
-        .map(|i| i.to_rgba8())
+        .map(image::DynamicImage::into_rgba8)
 }
 
 /// sRGB byte → linear light, by table.

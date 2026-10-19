@@ -428,3 +428,36 @@ fn a_companion_file_takes_the_name_in_the_dialog_too() {
         format!("{stem}-001")
     );
 }
+
+#[test]
+fn a_name_s_problem_is_said_before_the_dialog_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_string_lossy().into_owned();
+    assert_eq!(name_problem("").as_deref(), Some("type a file name"));
+    assert_eq!(
+        name_problem(&format!("{d}/")).as_deref(),
+        Some("type a file name")
+    );
+    assert_eq!(
+        name_problem(&d).as_deref(),
+        Some("type a file name"),
+        "a folder"
+    );
+    assert!(name_problem(&format!("{d}/nowhere/fig"))
+        .unwrap()
+        .starts_with("no folder"));
+    assert_eq!(name_problem(&format!("{d}/fig")), None);
+}
+
+#[test]
+fn suffixes_built_at_run_time_are_taken_as_they_are() {
+    let dir = tempfile::tempdir().unwrap();
+    let stem = dir.path().join("fig").to_string_lossy().into_owned();
+    let suffixes: Vec<String> = vec![".png".into(), "-structure.png".into()];
+    std::fs::write(format!("{stem}-structure.png"), b"x").unwrap();
+    assert_eq!(taken(&stem, &suffixes).len(), 1);
+    assert_eq!(
+        free_stem(&stem, &suffixes, Numbering::Suffix),
+        format!("{stem}-2")
+    );
+}
