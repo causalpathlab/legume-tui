@@ -55,7 +55,11 @@ legume-tui = "0.3"
    runner's child in a process group of its own, so a stop reaches all it
    started; `Group::OwnWhenHosted` does so only while hosted. A child the
    tool polls itself goes in a `Stopper` too (`hold`, then `try_wait`,
-   `id`, `stop`), so a hangup reaches it.
+   `id`, `stop`), so a hangup reaches it. `child::Bar::track`, fed each
+   word the child says, follows its progress bar: where it stands, the
+   trend of the scores it reports (`key=value`, one point a message), and
+   whether it is still on the child's screen; `child::gauge` draws it as
+   text, the trend as a sparkline.
 7. Work outside the screen: `session.off_screen(|| ..)` for work that
    writes to the terminal as a plain program does (the screen handed over
    while it runs, if up), and `session.stoppable(|| ..)` for work that

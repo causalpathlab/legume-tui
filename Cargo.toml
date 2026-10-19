@@ -1,6 +1,6 @@
 [package]
 name = "legume-tui"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -24,7 +24,7 @@ graphics = ["dep:ratatui-image"]
 logs = ["dep:log"]
 # A stoppable runner of child processes that follows their logs and
 # progress bars (Unix).
-child = []
+child = ["dep:unicode-width"]
 # A harness that drives a tool's TUI through pseudo-terminals, for its tests:
 # canned terminal answers and a model of the visible screen.
 testing = ["dep:tempfile", "dep:vt100"]
@@ -36,6 +36,7 @@ clap = { version = "4.5.20", optional = true, features = ["derive"] }
 tempfile = { version = "3.2", optional = true }
 vt100 = { version = "0.16", optional = true }
 log = { version = "0.4", optional = true }
+unicode-width = { version = "0.2", optional = true }
 
 # Pseudo-terminals, sessions and signals; Unix only.
 [target.'cfg(unix)'.dependencies]
