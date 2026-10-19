@@ -382,15 +382,15 @@ fn three() -> Vec<Placed<u32>> {
 }
 
 #[test]
-fn only_shift_l_starts_label_editing() {
-    assert!(LabelEdit::<u32>::starts(&key(KeyCode::Char('L'))));
-    assert!(LabelEdit::<u32>::starts(&shift(KeyCode::Char('L'))));
-    assert!(!LabelEdit::<u32>::starts(&key(KeyCode::Char('l'))));
+fn only_shift_e_starts_label_editing() {
+    assert!(LabelEdit::<u32>::starts(&key(KeyCode::Char('E'))));
+    assert!(LabelEdit::<u32>::starts(&shift(KeyCode::Char('E'))));
+    assert!(!LabelEdit::<u32>::starts(&key(KeyCode::Char('e'))));
     assert!(!LabelEdit::<u32>::starts(&KeyEvent::new(
-        KeyCode::Char('L'),
+        KeyCode::Char('E'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT
     )));
-    let mut release = key(KeyCode::Char('L'));
+    let mut release = key(KeyCode::Char('E'));
     release.kind = KeyEventKind::Release;
     assert!(!LabelEdit::<u32>::starts(&release));
 }

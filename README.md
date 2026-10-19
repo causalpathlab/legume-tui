@@ -595,7 +595,7 @@ Other wording may change.
   the pointer, a press released in place clicks (adding, by
   `PointerOpts`, with the right button or held modifiers), motion hovers,
   and a press on a label drags the label (`MoveLabel`). `LabelEdit` moves
-  labels from the keyboard, entered with `L`: Tab and BackTab pick a
+  labels from the keyboard, entered with `E`: Tab and BackTab pick a
   label, the arrows nudge it half a line (Shift: two), Backspace puts it
   back and Esc leaves. `nav_key` reads the zoom, pan and fit keys.
   `chrome::Chrome`: page, hint and menu styles from a theme, or the

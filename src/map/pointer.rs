@@ -273,8 +273,9 @@ impl<K: Copy> Pointer<K> {
     }
 }
 
-/// The key that enters label editing: Shift+l.
-pub const EDIT_KEY: char = 'L';
+/// The key that enters label editing: Shift+e, free on the maps of the
+/// viewers that share this module.
+pub const EDIT_KEY: char = 'E';
 
 /// How far an arrow moves a label, in em.
 pub const NUDGE: f32 = 0.5;
