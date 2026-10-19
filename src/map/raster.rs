@@ -31,8 +31,8 @@ pub trait Canvas {
 /// How a frame turns linear light into bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Encoding {
-    /// senna's table, for [`Frame::blank`] and the frames point jobs
-    /// hand over.
+    /// The coarse table ([`encode_senna`](super::colour::encode_senna)),
+    /// for [`Frame::blank`] and the frames point jobs hand over.
     Senna,
     /// The table every byte comes back through, for frames entered from
     /// bytes ([`Frame::from_srgba`]) and [`Frame::blank_exact`].
@@ -53,9 +53,9 @@ pub struct Frame {
 
 impl Frame {
     /// A `w × h` page in the colour `bg`, for points or a chart drawn
-    /// from scratch. It encodes through senna's table, as a point job's
-    /// frame does, so senna keeps its pixels; that table shifts a few dark
-    /// bytes, which [`Frame::blank_exact`] does not.
+    /// from scratch. It encodes through the coarse table, as a point job's
+    /// frame does, so pixels drawn before keep their bytes; that table
+    /// shifts a few dark bytes, which [`Frame::blank_exact`] does not.
     #[must_use]
     pub fn blank(w: usize, h: usize, bg: Srgb) -> Self {
         let bg = to_linear(bg);
@@ -193,8 +193,7 @@ impl Canvas for Frame {
     }
 }
 
-/// A point's mark. Saved by name (`"circle"`), as senna's style file
-/// keeps it.
+/// A point's mark. Saved by name (`"circle"`), as a style file keeps it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Shape {

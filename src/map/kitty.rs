@@ -1,4 +1,4 @@
-//! pinto's own ways of putting a map on screen: kitty graphics ([`Kitty`]),
+//! Ways of putting a map on screen of its own: kitty graphics ([`Kitty`]),
 //! coloured block characters ([`cellart`]), and the `--graphics` choice
 //! between them and ratatui-image's protocols ([`MapGraphics`]), resolved
 //! for a terminal to the one drawn with ([`Resolved`]).

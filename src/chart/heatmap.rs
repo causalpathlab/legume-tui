@@ -84,7 +84,7 @@ impl Levels for Matrix<'_> {
     }
 }
 
-/// Levels worked out when asked, as pinto reads its model's rates.
+/// Levels worked out when asked, each from a function of row and column.
 #[derive(Clone, Copy, Debug)]
 pub struct ByFn<F: Fn(usize, usize) -> f32> {
     pub rows: usize,
@@ -240,8 +240,8 @@ pub struct HeatStyle {
 }
 
 impl HeatStyle {
-    /// senna's: 16 and 18 characters, missing values in the theme's muted
-    /// colour, with a key. pinto passes its theme's dimmed colour instead.
+    /// 16 characters of a row's name and 18 of a column's, missing values
+    /// in the theme's muted colour, with a key.
     #[must_use]
     pub fn for_theme(theme: &Theme) -> Self {
         Self {
@@ -289,8 +289,8 @@ impl HeatLayout {
     }
 }
 
-/// senna's heatmap: the title in bold, a cell per row and column in the
-/// diverging colour of `z / clip`, row names at the left (as many as fit a
+/// A heatmap: the title in bold, a cell per row and column in the
+/// diverging colour of `z / clip` ([`cell_colour_lin`]), row names at the left (as many as fit a
 /// line each), column names turned under the columns, and the ramp from
 /// `+clip` to `-clip` at the right, in the theme's text colour. Text is
 /// kept as text when the frame keeps it.
@@ -418,10 +418,10 @@ pub fn draw_heat(
     })
 }
 
-/// A heatmap as a small picture, for a gallery thumbnail (pinto's
-/// `heat_picture`): with `swatch`, a row of the groups' colours on top,
-/// then a `px`-square block per value of `z` (`cols` a row), in pinto's
-/// bytes; missing values in the theme's dimmed colour.
+/// A heatmap as a small picture, drawn in sRGB bytes rather than blended:
+/// with `swatch`, a row of the groups' colours on top, then a `px`-square
+/// block per value of `z` (`cols` a row) in its [`cell_colour`], missing
+/// values in the theme's dimmed colour; a value past the end of `z` is 0.
 #[must_use]
 pub fn thumbnail(
     z: &[f32],
@@ -453,8 +453,8 @@ pub fn thumbnail(
     Frame::from_srgba(w, h, &rgba, bg)
 }
 
-/// A heatmap's values as a table (pinto's): a `# what` line, a header of
-/// `head` (what the rows are; pinto's `gene`), `marks` and the columns,
+/// A heatmap's values as a table: a `# what` line, a header of `head`
+/// (what the rows are, e.g. `feature`), `marks` and the columns,
 /// then per row its name, the group it marks and its values to four
 /// places, tab-separated.
 #[must_use]

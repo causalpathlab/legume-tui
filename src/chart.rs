@@ -18,8 +18,7 @@ use crate::map::raster::Frame;
 use crate::map::text::{self, Font};
 use crate::map::theme::Theme;
 
-/// One line of text where the chart would be, in the page's text colour
-/// (senna's `note`).
+/// One line of text where the chart would be, in the page's text colour.
 pub fn note(frame: &mut Frame, s: &str, font: Font, theme: &Theme) {
     let bg = frame.background();
     let lh = font.line_height() as i32;
@@ -29,9 +28,9 @@ pub fn note(frame: &mut Frame, s: &str, font: Font, theme: &Theme) {
 /// How [`step_top`] steps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// senna: up by a quarter, down by a fifth, each rounded up.
+    /// Up by a quarter, down by a fifth, each rounded up.
     Quarter,
-    /// pinto: one at a time.
+    /// One at a time.
     One,
 }
 

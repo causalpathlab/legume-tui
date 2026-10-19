@@ -12,7 +12,7 @@
 //!
 //! Terminal mouse events come in whole cells, so a dragged label moves a
 //! cell at a time; [`LabelEdit`] is the keyboard's finer way, in half
-//! line heights. [`nav_key`] is senna's zoom, pan and fit keys.
+//! line heights. [`nav_key`] reads the zoom, pan and fit keys.
 
 use super::labels::Placed;
 use super::offsets::Offsets;
@@ -80,17 +80,18 @@ impl MapArea {
 pub struct PointerOpts {
     /// The zoom of one wheel step: in on the way up, out by its inverse.
     pub wheel: f32,
-    /// A drag goes on when the pointer leaves the map (pinto); otherwise
+    /// A drag goes on when the pointer leaves the map; otherwise
     /// motion off the map is ignored. Either way any release ends it.
     pub drag_outside: bool,
-    /// A right press on the map is a click that adds (pinto).
+    /// A right press on the map is a click that adds.
     pub right_click_adds: bool,
-    /// Held on release, these make a click one that adds (pinto: Ctrl or
-    /// Alt; Shift is the terminal's, for selecting text).
+    /// Held on release, these make a click one that adds (Ctrl or Alt,
+    /// say; Shift is the terminal's, for selecting text).
     pub add_mods: KeyModifiers,
 }
 
-/// senna's wheel, pinto's drag past the edge, and no click that adds.
+/// A wheel step of 1.25, a drag that goes on past the edge, and no click
+/// that adds.
 impl Default for PointerOpts {
     fn default() -> Self {
         Self {
@@ -429,7 +430,7 @@ impl Nav {
     }
 }
 
-/// senna's map keys: `+`/`=` zoom in by `zoom`, `-`/`_` out by it, an
+/// Map keys: `+`/`=` zoom in by `zoom`, `-`/`_` out by it, an
 /// arrow pans `pan` pixels (the picture moves against the arrow, so the
 /// view goes its way), `0` fits the whole map. Any other key, any with
 /// Ctrl or Alt, and Shift with an arrow, are the viewer's.

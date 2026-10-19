@@ -25,7 +25,7 @@
 //!
 //! Ported from pinto's `src/view/cellart.rs`. pinto decodes the frame's
 //! sRGB bytes; here each pixel goes through the bytes the frame encodes it
-//! to ([`Frame::to_image`], senna's table for a frame drawn from scratch)
+//! to ([`Frame::to_image`], the coarse table for a frame drawn from scratch)
 //! and back, so the cells start from the bytes kitty would be sent, and a
 //! frame made from bytes ([`Frame::from_srgba`]) reads as pinto's did.
 //! A renderer that has the bytes fits them as they are
@@ -162,8 +162,8 @@ impl Cells {
     }
 
     /// [`Cells::fit`] for `w × h` sRGBA bytes, `rgba`, on the page `bg`, as
-    /// a renderer writing bytes has them: each byte read as pinto read it,
-    /// with no frame of linear pixels made. Bytes past `w × h × 4` are
+    /// a renderer writing bytes has them: each byte decoded to linear light
+    /// as it is, with no frame of linear pixels made. Bytes past `w × h × 4` are
     /// ignored; None when `rgba` holds fewer.
     #[must_use]
     pub fn fit_srgba(

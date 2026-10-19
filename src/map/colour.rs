@@ -80,13 +80,13 @@ pub fn to_srgb(c: Lin) -> Srgb {
     c.map(encode)
 }
 
-/// Entries in senna's encoder table.
+/// Entries in the coarse encoder table.
 const SENNA_STEPS: usize = 4096;
 
-/// Linear light → sRGB byte through senna's table: 4096 entries from 0 to
+/// Linear light → sRGB byte through a coarse table: 4096 entries from 0 to
 /// 1 inclusive, read by truncating. A few dark bytes and some values
-/// between them come back one lower than [`encode`] gives, so senna keeps
-/// the pixels it drew before.
+/// between them come back one lower than [`encode`] gives; pixels drawn
+/// through this table before keep their bytes.
 #[must_use]
 pub fn encode_senna(c: f32) -> u8 {
     static TABLE: LazyLock<Vec<u8>> = LazyLock::new(|| {
@@ -97,7 +97,7 @@ pub fn encode_senna(c: f32) -> u8 {
     TABLE[(c.clamp(0., 1.) * (SENNA_STEPS - 1) as f32) as usize]
 }
 
-/// A linear colour in sRGB, by senna's table.
+/// A linear colour in sRGB, by the coarse table of [`encode_senna`].
 #[must_use]
 pub fn to_srgb_senna(c: Lin) -> Srgb {
     c.map(encode_senna)
@@ -126,8 +126,8 @@ pub fn oklch(l: f32, c: f32, h_deg: f32) -> Lin {
     .map(|v| v.clamp(0.0, 1.0))
 }
 
-/// [`oklch`] as pinto writes it (`oklab_to_srgb`): one coefficient ends a
-/// digit shorter, a different `f32`, which moves a few bytes.
+/// [`oklch`] with one coefficient a digit shorter, a different `f32`,
+/// which moves a few bytes.
 fn oklch_pinto(l: f32, c: f32, h_deg: f32) -> Lin {
     let h = h_deg.to_radians();
     let (a, b) = (c * h.cos(), c * h.sin());
@@ -156,8 +156,8 @@ pub fn oklab(c: Lin) -> [f32; 3] {
 }
 
 /// Label ink for points drawn in `c`: the same hue at `lightness`, and a
-/// little less saturated, so text stays legible on the page (senna takes
-/// 0.42 on its light page).
+/// little less saturated, so text stays legible on the page (0.42 suits a
+/// light page).
 #[must_use]
 pub fn ink_for(c: Lin, lightness: f32) -> Lin {
     let [_, a, b] = oklab(c);
@@ -181,13 +181,13 @@ pub struct Categorical {
     /// Up to this many categories all take the first step; past it the
     /// steps alternate. 0: they always alternate.
     pub cycle_after: usize,
-    /// Whether the hue is taken modulo 360° before it is turned (senna's);
-    /// pinto's is not. The two differ in the last bits of a few colours.
+    /// Whether the hue is taken modulo 360° before it is turned. With and
+    /// without, the last bits of a few colours differ.
     pub wrap_hue: bool,
 }
 
 impl Categorical {
-    /// senna's: equal lightness keeps any one group from shouting; past a
+    /// Equal lightness keeps any one group from shouting; past a
     /// dozen groups lightness alternates to buy separation.
     pub const SENNA: Self = Self {
         hue0: 25.0,
@@ -196,7 +196,7 @@ impl Categorical {
         cycle_after: 12,
         wrap_hue: true,
     };
-    /// pinto's on a light background: darker steps, a little more
+    /// For a light background: darker steps, a little more
     /// saturated, so neighbouring ids never share a hue or a lightness.
     pub const PINTO_LIGHT: Self = Self {
         hue0: 20.0,
@@ -205,7 +205,7 @@ impl Categorical {
         cycle_after: 0,
         wrap_hue: false,
     };
-    /// pinto's on a dark background.
+    /// For a dark background: lighter steps, a little less saturated.
     pub const PINTO_DARK: Self = Self {
         hue0: 20.0,
         l: &[0.72, 0.60, 0.82],
@@ -233,13 +233,13 @@ impl Categorical {
         oklch(l, c, h)
     }
 
-    /// Colour of category `i` of `n` in sRGB, by the formula (pinto's).
+    /// Colour of category `i` of `n` in sRGB, by the formula, not a table.
     #[must_use]
     pub fn srgb(&self, i: usize, n: usize) -> Srgb {
         self.colour(i, n).map(encode_exact)
     }
 
-    /// The `k` colours of `k` categories in sRGB: pinto's `palette(k)`.
+    /// The `k` colours of `k` categories in sRGB.
     #[must_use]
     pub fn srgb_all(&self, k: usize) -> Vec<Srgb> {
         (0..k).map(|i| self.srgb(i, k)).collect()
@@ -339,8 +339,8 @@ pub fn diverging(t: f32) -> Srgb {
     oklch_pinto(l, c, hue).map(encode_exact)
 }
 
-/// [`diverging`] in linear light, for a chart blended in a frame: senna's
-/// heatmap colour (`src/view/chart.rs`), on [`oklch`]. Through [`to_srgb`]
+/// [`diverging`] in linear light, for a chart blended in a frame, on
+/// [`oklch`]. Through [`to_srgb`]
 /// it is within a byte of [`diverging`].
 #[must_use]
 pub fn diverging_lin(t: f32) -> Lin {

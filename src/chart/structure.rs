@@ -1,6 +1,6 @@
 //! Structure plot: each row's mixture over `k` components as a stacked
 //! bar, rows side by side in one panel per group: the admixture plot of
-//! population genetics, a topic model's topic shares, pinto's community
+//! population genetics, a topic model's topic shares, a model's community
 //! propensities.
 //!
 //! Components stack in order of overall prevalence, the most prevalent at
@@ -8,7 +8,7 @@
 //! then by its weight, highest first; on a tie for the dominant component
 //! the more prevalent one takes it. A pixel column sums the rows that fall
 //! on it and renormalises, so weights in any non-negative scale (shares in
-//! `f32`, pinto's `u8` of 255) draw alike.
+//! `f32`, propensities in `u8` of 255) draw alike.
 //!
 //! Ported from pinto (`src/view/structure.rs`: `build`, `sort_cells`,
 //! `widths`, `render`) and senna (`src/view/chart.rs`: `build_structure`'s
@@ -32,8 +32,8 @@ pub const NAME_CHARS: usize = 18;
 /// The panel of rows no group claims, drawn last.
 pub const UNASSIGNED: &str = "unassigned";
 
-/// `n × k` weights, row-major, in any non-negative scale: senna's `f32`
-/// shares, pinto's `u8` propensities of 255.
+/// `n × k` weights, row-major, in any non-negative scale: `f32` shares,
+/// say, or `u8` propensities of 255.
 #[derive(Clone, Copy, Debug)]
 pub struct Weights<'a, W> {
     pub k: usize,
@@ -67,7 +67,7 @@ impl<W: Copy + Into<f32>> Weights<'_, W> {
 }
 
 /// The group of each row, by index into `names`. An id past the names
-/// (`u32::MAX`, pinto's `NO_CLUSTER`) puts the row in [`UNASSIGNED`].
+/// (`u32::MAX`, say) puts the row in [`UNASSIGNED`].
 #[derive(Clone, Copy, Debug)]
 pub struct Grouping<'a, G> {
     pub of: &'a [G],
@@ -157,8 +157,8 @@ impl Layout {
         Layout { panels, stack }
     }
 
-    /// Each panel as a plot of its own, by name, on the same stack (pinto's
-    /// grid tiles).
+    /// Each panel as a plot of its own, by name, on the same stack, to
+    /// tile in a grid.
     #[must_use]
     pub fn into_panels(self) -> Vec<(String, Layout)> {
         let stack = self.stack;
@@ -260,7 +260,7 @@ pub fn widths(sizes: &[usize], w: usize, gap: usize) -> Vec<usize> {
     out
 }
 
-/// senna's panel widths for `w` pixels with `gap` between panels: each
+/// Panel widths for `w` pixels with `gap` between panels: each
 /// its share of the room, rounded down, at least a pixel. The pixels left
 /// over stay blank at the right.
 #[must_use]
@@ -275,8 +275,7 @@ pub fn senna_widths(sizes: &[usize], w: usize, gap: usize) -> Vec<usize> {
 pub struct BarStyle<'a> {
     /// Colour by component id.
     pub palette: &'a [Lin],
-    /// The components in focus, and the colour of the rest (pinto passes
-    /// its theme's dimmed colour).
+    /// The components in focus, and the colour the others are drawn in.
     pub focus: Option<(&'a [bool], Lin)>,
     /// Pixels between panels.
     pub gap: usize,
@@ -343,7 +342,7 @@ impl Drawn {
 /// summed and renormalised, stacked from the bottom. A column whose rows
 /// weigh nothing stays the page.
 ///
-/// For pinto's bytes, draw into a frame made by
+/// To keep colours given as sRGB bytes exact, draw into a frame made by
 /// [`Frame::from_srgba`](crate::map::raster::Frame::from_srgba): its
 /// colours come back as the bytes they were. On an empty page,
 /// [`Frame::blank_exact`](crate::map::raster::Frame::blank_exact) gives
@@ -458,12 +457,12 @@ pub struct Figure<'a> {
     pub theme: &'a Theme,
 }
 
-/// senna's whole chart: the title in bold at the top left, the bars in
+/// The whole chart: the title in bold at the top left, the bars in
 /// panels of [`senna_widths`], panel names under them (cut to
 /// [`NAME_CHARS`]) and the key at the right, in the theme's text colour.
 /// Text is kept as text when the frame keeps it. Too small for bars, it
-/// says so in a note and nothing is drawn. Unlike senna, bars stop at the
-/// key when panels given a pixel they had no room for would pass it.
+/// says so in a note and nothing is drawn. Bars stop at the key when
+/// panels given a pixel they had no room for would pass it.
 pub fn figure<W: Copy + Into<f32>>(
     frame: &mut Frame,
     l: &Layout,
