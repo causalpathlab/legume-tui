@@ -191,7 +191,7 @@ fn viewer(views: usize) -> (tempfile::TempDir, Viewer) {
     (dir, v)
 }
 
-fn saved(k: SaveKey<Scope>) -> SaveRequest<Scope> {
+fn saved<S>(k: SaveKey<S>) -> SaveRequest<S> {
     match k {
         SaveKey::Save(r) => r,
         _ => panic!("not saved"),
@@ -348,4 +348,68 @@ fn the_dialog_draws_its_fields_size_and_keys() {
     ] {
         assert!(all.contains(want), "{want} not in\n{all}");
     }
+}
+
+/// A map whose save writes a structure picture and table beside it, as
+/// pinto's does.
+struct Map {
+    dir: std::path::PathBuf,
+}
+
+impl SaveTarget for Map {
+    type Scope = ();
+    fn scopes(&self) -> Vec<()> {
+        vec![()]
+    }
+    fn scope_name(&self, (): ()) -> String {
+        "map".into()
+    }
+    fn default_stem(&self, (): ()) -> String {
+        self.dir.join("tool-view").to_string_lossy().into_owned()
+    }
+    fn exts(&self, (): ()) -> Vec<String> {
+        vec!["png".into(), "pdf".into()]
+    }
+    fn suffixes(&self, (): ()) -> Vec<String> {
+        [".png", ".pdf", "-structure.png", "-structure.txt"]
+            .map(String::from)
+            .to_vec()
+    }
+    fn aspect(&self, (): ()) -> f32 {
+        1.0
+    }
+}
+
+#[test]
+fn a_companion_file_takes_the_name_in_the_dialog_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = Map {
+        dir: dir.path().to_path_buf(),
+    };
+    let stem = m.default_stem(());
+    let counter = Numbering::Counter { digits: 3 };
+    std::fs::write(format!("{stem}-001-structure.png"), b"").unwrap();
+    // Offered past the companion.
+    let mut d = SaveDialog::new(&m, (), counter);
+    assert_eq!(d.name(), format!("{stem}-002"));
+    // The save writes, and names, every companion.
+    let r = saved(d.key(key(KeyCode::Enter), &m));
+    let want: Vec<std::path::PathBuf> = [".png", ".pdf", "-structure.png", "-structure.txt"]
+        .iter()
+        .map(|s| format!("{stem}-002{s}").into())
+        .collect();
+    assert_eq!(r.files, want);
+    assert_eq!(r.path, want[0]);
+    // A typed name whose companion alone exists asks before replacing it.
+    let mut d = SaveDialog::new(&m, (), counter);
+    d.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), &m);
+    for c in format!("{stem}-001.png").chars() {
+        d.key(key(KeyCode::Char(c)), &m);
+    }
+    assert!(matches!(d.key(key(KeyCode::Enter), &m), SaveKey::Open));
+    assert!(d.status().unwrap().contains("-001-structure.png"));
+    assert_eq!(
+        saved(d.key(key(KeyCode::Enter), &m)).stem,
+        format!("{stem}-001")
+    );
 }

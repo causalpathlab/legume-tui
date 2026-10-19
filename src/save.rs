@@ -208,7 +208,15 @@ pub trait SaveTarget {
     fn default_stem(&self, s: Self::Scope) -> String;
     /// The extensions a save of `s` writes beside its stem, without the
     /// dot; the first is the file the dialog names and the gallery lists.
+    /// A typed name loses any of them.
     fn exts(&self, s: Self::Scope) -> Vec<String>;
+    /// What each file a save of `s` adds to its stem, the main file first:
+    /// `.` and each of [`exts`](Self::exts), unless the save writes
+    /// companions as well (pinto's `-structure.png`). A name is offered,
+    /// and saved over without asking, only while none of them exists.
+    fn suffixes(&self, s: Self::Scope) -> Vec<String> {
+        self.exts(s).iter().map(|e| format!(".{e}")).collect()
+    }
     /// The picture's width over its height.
     fn aspect(&self, s: Self::Scope) -> f32;
     /// Said after the size: `(first of 3 pages)`.
@@ -240,7 +248,7 @@ pub struct SaveRequest<S> {
     pub px: (usize, usize),
     /// The name without an extension, `~` expanded.
     pub stem: String,
-    /// The main file: the stem and the first extension.
+    /// The main file: the stem and the first of its suffixes.
     pub path: PathBuf,
     /// Every file the save writes, the main one first.
     pub files: Vec<PathBuf>,
@@ -330,9 +338,10 @@ impl<S: Copy + PartialEq> SaveDialog<S> {
         let exts = t.exts(self.scope);
         let refs: Vec<&str> = exts.iter().map(String::as_str).collect();
         let stem = stem_of(&self.name.text, &refs);
-        let files = exts
+        let files = t
+            .suffixes(self.scope)
             .iter()
-            .map(|e| PathBuf::from(format!("{stem}.{e}")))
+            .map(|s| PathBuf::from(format!("{stem}{s}")))
             .collect();
         (stem, files)
     }
@@ -553,7 +562,7 @@ impl<S: Copy + PartialEq> SaveDialog<S> {
 /// The name offered for `scope`, numbered past the files a save would
 /// write.
 fn offered<T: SaveTarget>(t: &T, scope: T::Scope, numbering: Numbering) -> String {
-    let suffixes: Vec<String> = t.exts(scope).iter().map(|e| format!(".{e}")).collect();
+    let suffixes = t.suffixes(scope);
     let refs: Vec<&str> = suffixes.iter().map(String::as_str).collect();
     free_stem(&t.default_stem(scope), &refs, numbering)
 }
