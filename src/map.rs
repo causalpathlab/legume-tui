@@ -10,6 +10,8 @@
 pub mod colour;
 #[cfg(feature = "map-display")]
 pub mod display;
+#[cfg(feature = "map-kitty")]
+pub mod kitty;
 pub mod labels;
 pub mod legend;
 pub mod offsets;

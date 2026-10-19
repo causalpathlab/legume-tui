@@ -614,6 +614,19 @@ Other wording may change.
   aspect, the cell height text is sized for, and `check` against
   `MAX_PIXELS`. With `clap`, `PdfArgs` adds `--pdf`, `--width` (7 in)
   and `--dpi` (300).
+- `map-kitty`: pinto's own ways of putting a map on screen.
+  `map::kitty::Kitty::new(transport).through_tmux(on).named(tool)` shows a
+  `Frame` with kitty graphics (`show`, or `show_rgba` for bytes), two
+  images in turn so the map never flashes empty, its pixels through a
+  temporary file (`tty-graphics-protocol-{tool}-{pid}-{slot}.rgba`) or
+  inline, zlib-compressed in 4 KB chunks; `clear` takes them off the
+  screen and `remove_files` removes files kitty never read.
+  `map::kitty::cellart::Cells::fit` fits a frame to coloured block
+  characters (`Glyphs::{HalfBlocks, Quadrants, Symbols}`), drawn as a
+  ratatui widget. `map::kitty::MapGraphics` is the `--graphics` choice
+  among them and ratatui-image's protocols, with the protocol to ask for
+  (`protocol`), the glyphs it names (`glyphs`), and the crate's
+  `graphics::Graphics` where there is one.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`

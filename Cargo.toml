@@ -39,6 +39,9 @@ map-display = ["map", "graphics"]
 # A map or a grid of them as a PDF page: the raster as one image, its text
 # set over it in Helvetica; page sizes, and `--pdf`, `--width`, `--dpi`.
 export = ["map", "dep:pdf-writer", "dep:miniz_oxide"]
+# pinto's own ways of putting a map on screen: kitty graphics with two
+# images in turn, through a file or inline, and coloured block characters.
+map-kitty = ["map", "graphics", "dep:flate2", "dep:base64"]
 
 [dependencies]
 ratatui = "0.30"
@@ -55,6 +58,8 @@ serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
 pdf-writer = { version = "0.15", optional = true }
 miniz_oxide = { version = "0.8", optional = true }
+flate2 = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
 
 # Pseudo-terminals, sessions and signals; Unix only.
 [target.'cfg(unix)'.dependencies]
