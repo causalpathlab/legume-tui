@@ -102,8 +102,17 @@ fn a_plain_session_offers_no_keys_and_hears_no_stop() {
     let short: Vec<_> = keys.iter().map(|k| k.short.as_str()).collect();
     assert_eq!(short, ["detach", "switch"]);
     assert_eq!(keys[0].key, detach_key());
-    assert!(keys[0].long.starts_with("detach, leaving it running"));
-    assert!(keys[1].long.starts_with("switch,"));
+    // As 0.2 said them: the word, then what it does.
+    assert!(keys[0]
+        .long
+        .starts_with("detach: leave it running (named on the first detach); `"));
+    assert!(keys[0]
+        .long
+        .ends_with(" attach` (or starting it again) returns"));
+    assert_eq!(
+        keys[1].long,
+        "switch: leave it running and pick another session"
+    );
 }
 
 #[test]

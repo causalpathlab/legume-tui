@@ -5,7 +5,7 @@
 //! or [`WATCH`]. An attaching client then sends [`READY`] once its
 //! terminal is raw, and from there [`INPUT`] and [`RESIZE`]; the host
 //! answers with [`SCREEN`] and [`OUTPUT`] and, at the end, [`EXIT`] or
-//! [`ELSEWHERE`].
+//! [`ELSEWHERE`]. A client answers [`EXIT`] with [`HEARD`].
 //!
 //! Frames go out with `send(MSG_NOSIGNAL)` (`SO_NOSIGPIPE` on macOS): a
 //! peer that is gone is an error to handle, never a SIGPIPE, whatever the
@@ -36,11 +36,15 @@ pub(crate) const KILL: u8 = 6;
 /// [`crate::host::DETACHED`], the current state first. For a TUI that a
 /// hosted program started on the same terminal.
 pub(crate) const WATCH: u8 = 7;
+/// The client took [`EXIT`], and with it what the program left, to say.
+/// A host that does not hear it keeps that text for the next look.
+pub(crate) const HEARD: u8 = 8;
 
 // Host to client.
 /// Bytes the program wrote.
 pub(crate) const OUTPUT: u8 = 16;
-/// The program ended: its status as an `i32`.
+/// The program ended: its status as an `i32`, then what it left
+/// ([`crate::Session::leave`]) for this client to say, if anything.
 pub(crate) const EXIT: u8 = 17;
 /// Answer to [`INFO`]: pid (`u32`), 1 if attached, the start time in
 /// seconds since the epoch (`u64`), then the command line.

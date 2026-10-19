@@ -610,6 +610,20 @@ fn what_a_program_leaves_is_said_once_where_it_will_be_read() {
     assert!(!t.alternate(), "said on the user's own screen");
     assert!(dir.is_empty(), "taken once said: {:?}", dir.path());
 
+    // Ended by a `kill` from another terminal while one is attached: the
+    // attached one says it, and the kill does not.
+    for _ in 0..3 {
+        let mut t = dir.term(&["bye"], &[]);
+        t.wait_screen("demo-bye waiting");
+        let said = dir.run(&["kill"]);
+        assert!(said.contains("demo-bye-1 stopped"), "{said:?}");
+        assert!(!said.contains("left by the quit path"), "{said:?}");
+        assert_eq!(t.exit_code(), 0);
+        t.wait_for("demo-bye: left by the quit path");
+        assert!(dir.is_empty(), "taken once said: {:?}", dir.path());
+        assert!(!dir.run(&["sessions"]).contains("ended"), "said once");
+    }
+
     // Ended by a `kill` with nobody attached: the kill says it.
     let mut t = dir.term(&["bye"], &[]);
     t.wait_screen("demo-bye waiting");

@@ -165,8 +165,70 @@ fn frames_that_come_together_are_all_relayed() {
         &mut screen,
     )
     .unwrap();
-    assert_eq!(outcome, Outcome::Exited { code: 3 });
+    assert_eq!(
+        outcome,
+        Outcome::Exited {
+            code: 3,
+            left: None
+        }
+    );
     assert_eq!(out, b"one two three");
+}
+
+#[test]
+fn what_the_program_left_comes_with_its_status() {
+    let r = Relay::new();
+    let mut body = 2i32.to_be_bytes().to_vec();
+    body.extend_from_slice(b"fits finished: 2 of 2 done");
+    wire::send_all(&r.host, &wire::frame(wire::EXIT, &body)).unwrap();
+    let mut out = Vec::new();
+    let mut screen = Scan::default();
+    let outcome = relay(
+        &r.sock,
+        r.keys.as_fd(),
+        &mut out,
+        &r.winch,
+        &r.stop,
+        &mut screen,
+    )
+    .unwrap();
+    assert_eq!(
+        outcome,
+        Outcome::Exited {
+            code: 2,
+            left: Some("fits finished: 2 of 2 done".into())
+        }
+    );
+    // Said back, so the host lets the text go.
+    let mut host = &r.host;
+    host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(
+        wire::read_frame(&mut host).unwrap(),
+        Some((wire::HEARD, Vec::new()))
+    );
+}
+
+#[test]
+fn the_last_frame_finishes_one_begun_and_drops_what_waits() {
+    let (sock, mut host) = UnixStream::pair().unwrap();
+    let mut outbox = Outbox::default();
+    outbox.push(wire::INPUT, b"begun");
+    outbox.push(wire::INPUT, b"waiting");
+    // As a flush that sent the head alone leaves it.
+    wire::send_all(&sock, &wire::frame(wire::INPUT, b"begun")[..wire::HEAD]).unwrap();
+    outbox.sent = wire::HEAD;
+    outbox.last(&sock, wire::HEARD).unwrap();
+    drop(sock);
+    assert_eq!(
+        wire::read_frame(&mut host).unwrap(),
+        Some((wire::INPUT, b"begun".to_vec()))
+    );
+    assert_eq!(
+        wire::read_frame(&mut host).unwrap(),
+        Some((wire::HEARD, Vec::new()))
+    );
+    assert_eq!(wire::read_frame(&mut host).unwrap(), None);
+    assert!(outbox.is_empty());
 }
 
 #[test]

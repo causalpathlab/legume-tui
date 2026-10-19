@@ -226,7 +226,7 @@ pub fn help_keys() -> Vec<HelpKey> {
             key: detach_key(),
             short: "detach".into(),
             long: format!(
-                "detach, leaving it running (named on the first detach); \
+                "detach: leave it running (named on the first detach); \
                  `{} attach` (or starting it again) returns",
                 exe_name()
             ),
@@ -234,7 +234,7 @@ pub fn help_keys() -> Vec<HelpKey> {
         HelpKey {
             key: switch_key(),
             short: "switch".into(),
-            long: "switch, leaving it running, to another session picked".into(),
+            long: "switch: leave it running and pick another session".into(),
         },
     ]
 }
@@ -891,12 +891,16 @@ impl Session {
     }
 
     /// Leave `text` (a run's summary, the error it ended with) to be read
-    /// when the program has ended, in place of printing it: hosted, it is
-    /// kept beside the session's socket and said by the terminal attached
-    /// when the program ends, or else, once, by the next `<tool> attach`,
-    /// `sessions`, start of the tool, or the `kill` that ended it. Plain,
-    /// it is printed (on stderr) when the screen is restored, or now if it
-    /// is not up. A later call replaces it.
+    /// when the program has ended, in place of printing it. Hosted, it is
+    /// written beside the session's socket; if a terminal is attached
+    /// when the program ends, that terminal alone says it, after the
+    /// program's last output, and nothing stays (a `kill` from another
+    /// terminal does not say it). If the program ends with none attached,
+    /// or that terminal leaves (a key, a signal) before it takes it, it is
+    /// kept and said, once, by the next `<tool> attach`, `sessions`,
+    /// start of the tool, or the `kill` that ended it. Plain, it is
+    /// printed (on stderr) when the screen is restored, or now if it is
+    /// not up. A later call replaces it.
     pub fn leave(&self, text: &str) {
         match &self.inner.at {
             Some((dir, id)) if self.is_hosted() => {

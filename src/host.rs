@@ -96,7 +96,8 @@ struct Client {
     out: Arc<Queue>,
     /// To cut it off at once.
     sock: UnixStream,
-    writer: std::thread::JoinHandle<()>,
+    /// Ends true if every frame queued went out.
+    writer: std::thread::JoinHandle<bool>,
 }
 
 /// Frames for a client's writer thread, whole, at most [`OUT_QUEUE`]
@@ -195,6 +196,8 @@ struct Shared {
     early_gone: Condvar,
     /// The client given [`Shared::early`]: its output goes on from there.
     heir: AtomicU64,
+    /// The client that said it took the program's end ([`wire::HEARD`]).
+    heard: AtomicU64,
     /// Typed bytes dropped because the program was not reading them.
     dropped: AtomicU64,
     /// Someone asked the program to stop ([`wire::KILL`]).
@@ -391,6 +394,7 @@ impl Host {
             early: Mutex::new(Some(Vec::new())),
             early_gone: Condvar::new(),
             heir: AtomicU64::new(0),
+            heard: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
             pid: rustix::process::Pid::from_child(&child),
@@ -434,8 +438,12 @@ impl Host {
     }
 
     /// Wait for the program to end, then take the session's files away
-    /// (socket, status, label, log), hand the client its status and return
-    /// it (`128 + n` for signal `n`; 1 when it cannot be had).
+    /// (socket, status, label, log), hand the client its status, with
+    /// what the program left ([`crate::Session::leave`]) taken for it to
+    /// say, and return the status (`128 + n` for signal `n`; 1 when it
+    /// cannot be had). With no client attached at the end, or one that
+    /// does not say it took it ([`wire::HEARD`]), what the program left
+    /// stays for whoever looks next.
     pub fn wait(mut self) -> i32 {
         let code = loop {
             match self.child.wait() {
@@ -459,6 +467,15 @@ impl Host {
                     e.is_some() && !self.shared.stopped.load(SeqCst)
                 });
         }
+        // Whoever is attached now is the one attached at the end: held
+        // so to the last, while no `kill` waiting can have heard the end.
+        let mut client = self.shared.client.lock().unwrap_or_else(|e| e.into_inner());
+        // What the program left is the attached client's to say, and
+        // only its: taken while the socket still answers, so neither a
+        // `kill` from another terminal nor a later look finds it.
+        let mut left = client
+            .as_ref()
+            .and_then(|_| crate::dir::take_leave(&self.dir, &self.id));
         // The listener stops at its next connection, this one, and closes
         // the socket; then nothing answers on it and its files can go.
         self.shared.closing.store(true, SeqCst);
@@ -478,15 +495,31 @@ impl Host {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
-        let last = {
-            let mut c = self.shared.client.lock().unwrap_or_else(|e| e.into_inner());
-            self.shared.current.store(0, SeqCst);
-            c.take()
-        };
+        self.shared.current.store(0, SeqCst);
+        let last = client.take();
+        drop(client);
         if let Some(c) = last {
+            let mut body = code.to_be_bytes().to_vec();
+            body.extend_from_slice(left.as_deref().unwrap_or_default().as_bytes());
             // After its output; its writer ends with the queue.
-            c.out.finish(wire::frame(wire::EXIT, &code.to_be_bytes()));
-            let _ = c.writer.join();
+            c.out.finish(wire::frame(wire::EXIT, &body));
+            // Sent is not taken: a client leaving by a key or a signal as
+            // it came closes with the frame unread. Taken once it says so.
+            if c.writer.join().unwrap_or(false) && left.is_some() {
+                let sent = std::time::Instant::now();
+                while sent.elapsed() < LAST_WORDS {
+                    if self.shared.heard.load(SeqCst) == c.id {
+                        left = None;
+                        break;
+                    }
+                    std::thread::sleep(RETRY);
+                }
+            }
+            let _ = c.sock.shutdown(std::net::Shutdown::Both);
+        }
+        // The client went before it took it: kept, as for an end unseen.
+        if let Some(text) = left {
+            let _ = crate::dir::write_leave(&self.dir, &self.id, &text);
         }
         code
     }
@@ -553,16 +586,21 @@ fn relay_input(mut pty: File, typed: &Receiver<(u64, Vec<u8>)>, current: &Atomic
 }
 
 /// Send a client its frames, in order, until its queue closes; one it
-/// cannot take within [`STALL`] is let go.
-fn relay_to_client(sock: UnixStream, frames: Arc<Queue>, id: u64, shared: Arc<Shared>) {
+/// cannot take within [`STALL`] is let go. True if every frame went out;
+/// then only our side is shut, so its answer ([`wire::HEARD`]) can still
+/// be read.
+fn relay_to_client(sock: UnixStream, frames: Arc<Queue>, id: u64, shared: Arc<Shared>) -> bool {
     while let Some(frame) = frames.pop() {
         if wire::send_all(&sock, &frame).is_err() {
             shared.drop_client(id);
-            break;
+            frames.close();
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+            return false;
         }
     }
     frames.close();
-    let _ = sock.shutdown(std::net::Shutdown::Both);
+    let _ = sock.shutdown(std::net::Shutdown::Write);
+    true
 }
 
 /// One connection: a question, a kill, a watcher, or a client attaching.
@@ -700,6 +738,12 @@ fn attach(mut conn: UnixStream, hello: &[u8], shared: &Arc<Shared>) {
                 Some(s) if id.is_none() => size = Some(s),
                 _ => {}
             },
+            // No longer the current one by then: the end is sent after.
+            wire::HEARD => {
+                if let Some(me) = id {
+                    shared.heard.store(me, SeqCst);
+                }
+            }
             _ => {}
         }
     }

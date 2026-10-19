@@ -52,7 +52,8 @@
 //! Sessions of a tool are those whose ids are `<tool>-...`. Each command
 //! that takes a session finds it by its label or by its id. `attach` and
 //! `sessions` first say, once, what the tool's ended sessions left
-//! ([`crate::Session::leave`]), and `kill` what the one it ended left.
+//! ([`crate::Session::leave`]), and `kill` what the one it ended left
+//! unless a terminal attached to it was there to say it.
 //! Where sessions are not supported, the handlers say so and fail.
 
 #[cfg(sessions)]
@@ -269,8 +270,8 @@ sessions left (a summary, an error) follows, said once."
             &format!(
                 "Stop a `{tool}` session as {quit} does, letting it wrap up its \
                  work first; waits up to a minute for it to end, and says what \
-                 it left. --force kills it at once, and what it started may \
-                 then keep running."
+                 it left unless a terminal attached to it said it. --force \
+                 kills it at once, and what it started may then keep running."
             ),
             HELP_WIDTH,
         ),

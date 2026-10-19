@@ -315,6 +315,90 @@ fn program_exit_reaches_the_client_and_removes_the_session_files() {
     assert_eq!(h.done.join().unwrap(), 3);
 }
 
+/// A script that leaves `text` ([`crate::Session::leave`]) for session
+/// `tool-test-1` beside `path`, then runs `then`.
+fn leaving(path: &Path, text: &str, then: &str) -> String {
+    let leave = dir::leave_file(path.parent().unwrap(), "tool-test-1");
+    format!("printf '{text}' > '{}'; {then}", leave.display())
+}
+
+#[test]
+fn what_a_program_leaves_goes_to_the_client_attached_at_its_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tool-test-1.sock");
+    let (_control, done, _) = start(&path, &leaving(&path, "a summary", "read x; exit 4"));
+    let mut c = attach_now(&path);
+    input(&mut c, b"\n");
+    let mut said = exit_body(4);
+    said.extend_from_slice(b"a summary");
+    assert_eq!(next_event(&mut c), Some((wire::EXIT, said)));
+    wire::write_frame(&c, wire::HEARD, &[]).unwrap();
+    assert_eq!(done.join().unwrap(), 4);
+    // Said by that client alone: nothing stays for a later look.
+    assert!(!dir::leave_file(dir.path(), "tool-test-1").exists());
+}
+
+#[test]
+fn what_a_client_closing_unheard_was_sent_is_kept() {
+    // A client leaving by a key as the end comes: the frame is sent, not
+    // taken, so what the program left stays for the next look.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tool-test-1.sock");
+    let (_control, done, _) = start(&path, &leaving(&path, "a summary", "read x; exit 4"));
+    let mut c = attach_now(&path);
+    input(&mut c, b"\n");
+    let mut said = exit_body(4);
+    said.extend_from_slice(b"a summary");
+    assert_eq!(next_event(&mut c), Some((wire::EXIT, said)));
+    drop(c);
+    assert_eq!(done.join().unwrap(), 4);
+    assert_eq!(
+        dir::take_leave(dir.path(), "tool-test-1").as_deref(),
+        Some("a summary")
+    );
+}
+
+#[test]
+fn what_a_program_ending_unseen_leaves_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tool-test-1.sock");
+    let (_control, done, _) = start(&path, &leaving(&path, "a summary", "exit 0"));
+    assert_eq!(done.join().unwrap(), 0);
+    assert!(!path.exists());
+    assert_eq!(
+        dir::take_leave(dir.path(), "tool-test-1").as_deref(),
+        Some("a summary")
+    );
+}
+
+#[test]
+fn a_kill_from_elsewhere_finds_nothing_the_attached_client_is_told() {
+    // The program leaves its words as it stops, while a client is there:
+    // they are that client's, however the kill and the end interleave.
+    for _ in 0..5 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool-test-1.sock");
+        let leave = dir::leave_file(dir.path(), "tool-test-1");
+        let script = format!(
+            "trap \"printf 'stopped by kill' > '{}'; exit 0\" TERM; \
+             echo ready; while :; do sleep 0.01; done",
+            leave.display()
+        );
+        let (_control, done, _) = start(&path, &script);
+        let mut c = attach_now(&path);
+        output_until(&mut c, b"ready");
+        assert!(dir::stop(&path, false, WAIT).unwrap());
+        // As `kill` does once the session is gone.
+        assert_eq!(dir::take_leave(dir.path(), "tool-test-1"), None);
+        let mut said = exit_body(0);
+        said.extend_from_slice(b"stopped by kill");
+        assert_eq!(next_event(&mut c), Some((wire::EXIT, said)));
+        wire::write_frame(&c, wire::HEARD, &[]).unwrap();
+        assert_eq!(done.join().unwrap(), 0);
+        assert!(!leave.exists());
+    }
+}
+
 #[test]
 fn what_a_program_says_before_its_first_client_waits_for_it() {
     // An error at the start: the program is gone before anyone is there.

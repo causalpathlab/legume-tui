@@ -79,6 +79,19 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.1
+
+- `help_keys()` says what each key does in 0.2's words again
+  (`detach: leave it running (named on the first detach); ...` and
+  `switch: leave it running and pick another session`), so a tool that
+  reworded 0.3.0's phrases can show `long` as it is.
+- What a program leaves (`session.leave`) when it ends with a terminal
+  attached is handed to that terminal by the host, with the program's
+  status, and no `<id>.leave` stays behind. A `kill` from another
+  terminal no longer says words meant for the attached one, however the
+  two race; ended with none attached, or with one that leaves (a key, a
+  signal) before it takes them, they are kept and said once, as before.
+
 ## From 0.2
 
 - `Session::poll` and `poll_with` return a `Round` in place of
@@ -345,10 +358,13 @@ none unless a session of the process offers them.
 
 `session.leave(text)` keeps a program's closing words (a run's summary,
 the error it ended with) where they will be read. Hosted, they are
-written beside the socket, `<id>.leave`, and outlive the session: the
-terminal attached when the program ends says them after its screen; with
-none attached, the `kill` that ended it, the next `sessions`, `attach`
-or start of the tool says `<id> ended: <text>`, once, and the file goes.
+written beside the socket, `<id>.leave`. The terminal attached when the
+program ends says them after its screen, and only it: the host hands them
+over with the program's status and the file goes once that terminal
+says it took them, so a `kill` from another terminal does not say them.
+With none attached, or one gone before it took them, they outlive the
+session: the `kill` that ended it, the next `sessions`, `attach` or start
+of the tool says `<id> ended: <text>`, once, and the file goes.
 Plain, they are printed on stderr as the screen is restored.
 `session.hold_error(&mut terminal, error)` makes an error that ends the
 program the status (`stopped: ...`) and, on a screen nobody is attached
@@ -504,7 +520,8 @@ other keys, kill, kill waking a screen that waits long for a key, kill
 passed on to a child run before the screen, a program that fails at once,
 one slow to start its screen, one that stops reading its input, a signal
 in the switch picker, what a program leaves said once by the attached
-terminal, `kill`, `sessions` or the next start, an error held on a
+terminal (and not by a `kill` from another one), `kill`, `sessions` or
+the next start, an error held on a
 detached screen until it is seen and an error said once whether seen
 then or later, plain or hosted, work a stop waits for, a child run inside
 such work, a lost host ending the fits its program held but not a save

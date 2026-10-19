@@ -52,6 +52,9 @@ const LEAVE: &str = "\x1b[?1049l";
 const HOLD: Duration = Duration::from_millis(30);
 /// The most typed bytes held for a host not taking them; the oldest go.
 const PENDING: usize = 1 << 20;
+/// How long saying the program's end was taken ([`wire::HEARD`]) may
+/// wait for room: as long as the host waits to hear it.
+const HEARD_WAIT: Duration = Duration::from_secs(1);
 
 /// How a client's time with the session ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -62,8 +65,9 @@ pub(crate) enum Outcome {
     Stopped,
     /// The user asked for another session with the switch key.
     Switch,
-    /// The program ended with this status.
-    Exited { code: i32 },
+    /// The program ended with this status, leaving this to be said
+    /// ([`crate::Session::leave`]).
+    Exited { code: i32, left: Option<String> },
     /// Another client attached.
     Elsewhere,
     /// The host went away without a word.
@@ -231,6 +235,22 @@ impl Outbox {
     fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
+
+    /// Send a last frame, `tag` with no body, after the rest of any frame
+    /// begun (what waits behind it, typed for a program that has ended,
+    /// is dropped), waiting for room as long as `sock`'s write timeout
+    /// lets it.
+    fn last(&mut self, sock: &UnixStream, tag: u8) -> io::Result<()> {
+        let mut out = match self.frames.pop_front() {
+            Some((_, begun)) if self.sent > 0 => begun[self.sent..].to_vec(),
+            _ => Vec::new(),
+        };
+        self.frames.clear();
+        self.sent = 0;
+        self.bytes = 0;
+        out.extend_from_slice(&wire::frame(tag, &[]));
+        wire::send_all(sock, &out)
+    }
 }
 
 /// Be the client of the host on `sock` until the user detaches, the
@@ -357,9 +377,15 @@ fn relay(
                         }
                     }
                     Ok(Some((wire::EXIT, b))) if b.len() >= 4 => {
+                        let left = String::from_utf8_lossy(&b[4..]).into_owned();
                         end = Some(Outcome::Exited {
                             code: i32::from_be_bytes([b[0], b[1], b[2], b[3]]),
+                            left: (!left.is_empty()).then_some(left),
                         });
+                        // Taken: the host keeps it for a later look if
+                        // this is not heard.
+                        let _ = sock.set_write_timeout(Some(HEARD_WAIT));
+                        let _ = outbox.last(sock, wire::HEARD);
                         break;
                     }
                     Ok(Some((wire::ELSEWHERE, _))) => {
@@ -487,9 +513,10 @@ fn report(dir: &Path, tool: &Tool, id: &str, outcome: &Outcome) -> i32 {
             eprintln!("[lost the connection to {id}]");
             1
         }
-        Outcome::Exited { code, .. } => {
-            // What the program left, as it would have said it.
-            if let Some(text) = dir::take_leave(dir, id) {
+        Outcome::Exited { code, left } => {
+            // What the program left, as it would have said it: handed
+            // over by the host, so no other terminal says it.
+            if let Some(text) = left {
                 eprintln!("{text}");
             }
             if *code != 0 {
