@@ -70,13 +70,7 @@ pub fn draw_legend(
 
 /// A key for an activity view in the top-left corner: the title in `ink`,
 /// then the ramp as a thin bar. Returns the area it covers.
-pub fn draw_ramp_key(
-    frame: &mut Frame,
-    title: &str,
-    ramp: &[Lin],
-    font: Font,
-    ink: Lin,
-) -> Rect {
+pub fn draw_ramp_key(frame: &mut Frame, title: &str, ramp: &[Lin], font: Font, ink: Lin) -> Rect {
     let bg = frame.background();
     let lh = font.line_height() as i32;
     let (x0, y0) = (lh / 2, lh / 2);
