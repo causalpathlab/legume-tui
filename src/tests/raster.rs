@@ -113,6 +113,21 @@ fn an_edge_runs_between_its_trims() {
 }
 
 #[test]
+fn an_edge_far_off_the_frame_steps_only_across_it() {
+    let ink = [0.0; 3];
+    // The pixels it leaves are those of the same line stopped past the
+    // frame's edge.
+    let mut near = Frame::blank(100, 40, PAGE);
+    edge(&mut near, (10.0, 20.5), (200.0, 20.5), (0.0, 0.0), ink, 1.0);
+    let mut far = Frame::blank(100, 40, PAGE);
+    let t = std::time::Instant::now();
+    edge(&mut far, (10.0, 20.5), (1e9, 20.5), (0.0, 0.0), ink, 1.0);
+    edge(&mut far, (20.5, -1e9), (20.5, 1e9), (0.0, 0.0), ink, 0.0);
+    assert!(t.elapsed().as_secs_f32() < 1.0, "{:?}", t.elapsed());
+    assert_eq!(near.px, far.px);
+}
+
+#[test]
 fn kept_text_is_text_and_leaves_the_pixels() {
     let mut f = Frame::blank(200, 40, PAGE);
     let font = Font::for_cell_height(16.0, true);

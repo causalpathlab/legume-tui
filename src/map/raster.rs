@@ -300,8 +300,10 @@ pub fn edge(
     };
     let slope = (q.1 - p.1) / (q.0 - p.0);
     // One pixel column per step; the line's minor coordinate is shared
-    // between the two pixels it falls between.
-    for m in p.0.ceil() as i64..=q.0.floor() as i64 {
+    // between the two pixels it falls between. Only the columns on the
+    // frame are stepped, so a far end costs nothing.
+    let major = if steep { frame.h } else { frame.w } as i64;
+    for m in (p.0.ceil() as i64).max(0)..=(q.0.floor() as i64).min(major - 1) {
         let minor = p.1 + (m as f32 - p.0) * slope;
         let lo = minor.floor();
         for (o, w) in [(lo as i64, 1.0 - (minor - lo)), (lo as i64 + 1, minor - lo)] {

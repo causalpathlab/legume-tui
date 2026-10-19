@@ -171,6 +171,27 @@ fn a_leader_joins_a_label_moved_past_half_a_line() {
 }
 
 #[test]
+fn a_leader_to_an_anchor_far_off_the_frame_is_quick() {
+    // Zoomed deep: the anchor is far off the frame, the label held inside.
+    let mut o = none();
+    o.nudge(1, (-1e7, 0.0));
+    let mut f = Frame::blank(200, 100, PAGE);
+    let t = std::time::Instant::now();
+    let placed = place(
+        &mut f,
+        vec![label("CT1", (1e8, 50.0), 0, 0.0, Some(1))],
+        &[],
+        &o,
+    );
+    assert!(t.elapsed().as_secs_f32() < 1.0, "{:?}", t.elapsed());
+    assert!(placed[0].moved);
+    // The leader runs from the box to the frame's right edge.
+    let img = f.to_image();
+    let page = img.get_pixel(0, 0).0;
+    assert_ne!(img.get_pixel(199, 50).0, page);
+}
+
+#[test]
 fn hits_find_a_label_only_on_the_frame_it_was_placed_on() {
     let vp = Viewport::fit([0.0, 0.0, 1.0, 1.0], 200, 100, 0.92, YAxis::Up);
     let mut f = Frame::blank(200, 100, PAGE);
