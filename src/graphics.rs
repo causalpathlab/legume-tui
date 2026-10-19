@@ -23,14 +23,16 @@
 //! on the calling thread, a byte at a time and only while the terminal
 //! has one to give within [`PROBE_TIMEOUT`]; once it returns nothing is
 //! left reading. An answer that comes after the timeout is read by the
-//! program as input, as any late reply would be.
+//! program as input, as any late reply would be. The same round trip asks
+//! for kitty's keyboard enhancement, which the session keeps for the
+//! modes that depend on it ([`crate::Keyboard::IfSupported`]).
 
 use crate::Session;
 use ratatui_image::picker::{Picker, ProtocolType};
 use std::time::Duration;
 
 /// How long a terminal has to answer the query.
-pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+pub const PROBE_TIMEOUT: Duration = crate::ASK_TIMEOUT;
 
 /// A cell's size in pixels when a protocol is named and the terminal does
 /// not say: a common one.
@@ -80,6 +82,16 @@ pub enum Fallback {
     /// Guess from the terminal's environment ([`env_guess`]), without a
     /// word to the terminal.
     Env,
+    /// [`Fallback::Probe`], and where the terminal does not answer in
+    /// time, [`Fallback::Env`]'s guess.
+    ProbeThenEnv,
+}
+
+impl Fallback {
+    /// Whether the terminal is asked: never where it cannot be.
+    fn asks(self) -> bool {
+        cfg!(sessions) && matches!(self, Self::Probe | Self::ProbeThenEnv)
+    }
 }
 
 /// What the terminal said to the query.
@@ -92,6 +104,9 @@ pub struct Answer {
     pub cell: Option<(u16, u16)>,
     /// Its background colour (OSC 11), red, green and blue.
     pub background: Option<(u8, u8, u8)>,
+    /// Whether it has kitty's progressive keyboard enhancement (it
+    /// answered `CSI ? u`). Not asked inside tmux: false there.
+    pub keyboard_enhancement: bool,
 }
 
 /// A picker for the terminal `session` is attached to now. A protocol
@@ -115,33 +130,44 @@ pub fn pick_with(
     graphics: Graphics,
     fallback: Fallback,
 ) -> (Picker, Option<Answer>) {
-    let named = match graphics {
-        Graphics::Blocks => return (Picker::halfblocks(), None),
-        g => g.protocol(),
-    };
-    let fallback = if cfg!(sessions) {
-        fallback
-    } else {
-        Fallback::Env
-    };
+    match graphics {
+        Graphics::Blocks => (Picker::halfblocks(), None),
+        g => pick_protocol(session, g.protocol(), fallback),
+    }
+}
+
+/// [`pick_with`] for a tool's own choice of protocol, `wanted` (None for
+/// auto), so values of its own map onto it: the protocol it wants is
+/// taken as it is, with the cell size the terminal gives where it is
+/// asked. Unlike [`Graphics::Blocks`], block characters wanted here still
+/// ask the terminal when `fallback` does, for its answer (the cell's shape,
+/// the background).
+pub fn pick_protocol(
+    session: &Session,
+    wanted: Option<ProtocolType>,
+    fallback: Fallback,
+) -> (Picker, Option<Answer>) {
     let attached = session.attached();
     let tmux = in_tmux(session);
     // Made first: it finds tmux as its pictures will be wrapped, and lets
     // them through it.
     let blocks = Picker::halfblocks();
-    let answer = match fallback {
-        Fallback::Probe if attached => ask_terminal(tmux),
-        _ => None,
+    let answer = if fallback.asks() && attached {
+        ask_terminal(session, tmux)
+    } else {
+        None
     };
     let cell = answer.and_then(|a| a.cell).or_else(window_cell);
     let wrapped_right = tmux == blocks.tmux_detected();
-    let protocol = match (named, fallback) {
+    let env = |k: &str| session.terminal_env(k);
+    let protocol = match (wanted, fallback) {
         (Some(p), _) => p,
         (None, _) if !attached || cell.is_none() || !wrapped_right => ProtocolType::Halfblocks,
-        (None, Fallback::Env) => env_guess(session),
-        (None, Fallback::Probe) => probe_protocol(answer.and_then(|a| a.protocol), tmux, |k| {
-            session.terminal_env(k)
-        }),
+        (None, Fallback::ProbeThenEnv) if answer.is_none() => env_guess(session),
+        (None, Fallback::Probe | Fallback::ProbeThenEnv) if cfg!(sessions) => {
+            probe_protocol(answer.and_then(|a| a.protocol), tmux, env)
+        }
+        (None, _) => env_guess(session),
     };
     if protocol == ProtocolType::Halfblocks {
         return (blocks, answer);
@@ -231,7 +257,24 @@ pub enum Repick {
 /// [`Picker::halfblocks`] and take the first answer as for any attach:
 /// the first [`Session::take_repaint`] is true.
 pub fn reprobe(session: &Session, old: &Picker, graphics: Graphics, fallback: Fallback) -> Repick {
-    let new = pick(session, graphics, fallback);
+    reprobe_with(session, old, graphics, fallback).0
+}
+
+/// [`reprobe`], and what the terminal answered if it was asked (its
+/// background colour among it).
+pub fn reprobe_with(
+    session: &Session,
+    old: &Picker,
+    graphics: Graphics,
+    fallback: Fallback,
+) -> (Repick, Option<Answer>) {
+    let (new, answer) = pick_with(session, graphics, fallback);
+    (repick(old, new), answer)
+}
+
+/// What the pictures made with `old` need, `new` picked for the terminal
+/// attached now.
+fn repick(old: &Picker, new: Picker) -> Repick {
     let kind = |p: &Picker| {
         let f = p.font_size();
         (p.protocol_type(), f.width, f.height)
@@ -242,6 +285,38 @@ pub fn reprobe(session: &Session, old: &Picker, graphics: Graphics, fallback: Fa
         Repick::Resend
     } else {
         Repick::Same
+    }
+}
+
+/// How kitty's pictures reach the terminal ([`kitty_transport`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Transport {
+    /// Through a temporary file the terminal reads: it shares our files.
+    File,
+    /// Inline in the escape codes: over ssh, where the terminal cannot
+    /// read our files.
+    Inline,
+}
+
+/// How kitty's pictures reach the terminal `session` is attached to now:
+/// inline when it is reached over ssh (`SSH_CONNECTION`, `SSH_CLIENT` or
+/// `SSH_TTY` set and not empty in what it passed on,
+/// [`Session::terminal_env`]: it may be reached another way than the one
+/// the program started from), through a file otherwise.
+pub fn kitty_transport(session: &Session) -> Transport {
+    transport_from_env(|k| session.terminal_env(k))
+}
+
+/// [`kitty_transport`], from the environment variables (`var`).
+pub(crate) fn transport_from_env(var: impl Fn(&str) -> Option<String>) -> Transport {
+    let remote = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .iter()
+        .any(|k| var(k).is_some_and(|v| !v.is_empty()));
+    if remote {
+        Transport::Inline
+    } else {
+        Transport::File
     }
 }
 
@@ -289,42 +364,49 @@ pub(crate) fn cell_pixels(columns: u16, rows: u16, width: u16, height: u16) -> O
 }
 
 /// Ask the terminal `session` is attached to what it can show: its image
-/// protocol, cell size and background colour. None while nobody is
-/// attached, when stdin is not a terminal, when it does not answer within
-/// [`PROBE_TIMEOUT`], and where the terminal cannot be asked (a build
-/// without sessions). Call it with the terminal set up (raw), before mouse
-/// reports are on. Nothing is left reading after it returns.
+/// protocol, cell size, background colour and keyboard enhancement. None
+/// while nobody is attached, when stdin is not a terminal, when it does
+/// not answer within [`PROBE_TIMEOUT`], and where the terminal cannot be
+/// asked (a build without sessions). Call it with the terminal set up
+/// (raw), before mouse reports are on. Nothing is left reading after it
+/// returns.
 pub fn query(session: &Session) -> Option<Answer> {
     if !session.attached() {
         return None;
     }
-    ask_terminal(in_tmux(session))
+    ask_terminal(session, in_tmux(session))
 }
 
 /// [`ask`] the terminal on stdin and stdout, the query wrapped for tmux
-/// when `tmux`.
+/// when `tmux`; what it said of the keyboard (nothing, if it did not
+/// answer) is the session's to keep.
 #[cfg(sessions)]
-fn ask_terminal(tmux: bool) -> Option<Answer> {
+fn ask_terminal(session: &Session, tmux: bool) -> Option<Answer> {
     use std::os::fd::AsFd;
     let stdin = std::io::stdin();
     if !rustix::termios::isatty(&stdin) {
         return None;
     }
-    ask(stdin.as_fd(), &mut std::io::stdout(), tmux, PROBE_TIMEOUT)
+    let answer = ask(stdin.as_fd(), &mut std::io::stdout(), tmux, PROBE_TIMEOUT)
         .ok()
-        .flatten()
+        .flatten();
+    // No answer in time: none to the keyboard's query either, not asked
+    // again until the next attach.
+    if !tmux {
+        session.heard_keyboard(answer.is_some_and(|a| a.keyboard_enhancement));
+    }
+    answer
 }
 
 #[cfg(not(sessions))]
-fn ask_terminal(_tmux: bool) -> Option<Answer> {
+fn ask_terminal(_session: &Session, _tmux: bool) -> Option<Answer> {
     None
 }
 
 /// Write the query to `output` and read the terminal's answer from
-/// `input`, on this thread, for at most `timeout`: a byte at a time, each
-/// only once `input` has one, up to the end of the answer (the device
-/// status report the query ends with). None if the answer did not end in
-/// time. Echo and line mode are off while it reads, and put back after.
+/// `input`, on this thread, for at most `timeout` ([`crate::ask::ask`]).
+/// None if the answer did not end in time. Outside tmux, the keyboard is
+/// asked in the same query.
 #[cfg(sessions)]
 pub(crate) fn ask(
     input: std::os::fd::BorrowedFd<'_>,
@@ -332,63 +414,25 @@ pub(crate) fn ask(
     tmux: bool,
     timeout: Duration,
 ) -> std::io::Result<Option<Answer>> {
-    use ratatui_image::picker::cap_parser::{Parser, QueryStdioOptions};
-    use rustix::termios::{tcgetattr, tcsetattr, LocalModes, OptionalActions, SpecialCodeIndex};
-    let before = tcgetattr(input)?;
-    let mut quiet = before.clone();
-    quiet.local_modes &= !(LocalModes::ICANON | LocalModes::ECHO);
-    // Each read returns what has come, however little.
-    quiet.special_codes[SpecialCodeIndex::VMIN] = 1;
-    quiet.special_codes[SpecialCodeIndex::VTIME] = 0;
-    tcsetattr(input, OptionalActions::Now, &quiet)?;
-    let answered = (|| {
-        let options = QueryStdioOptions {
-            timeout,
-            terminal_background_color_osc: true,
-            ..Default::default()
-        };
-        output.write_all(Parser::query(tmux, options).as_bytes())?;
-        output.flush()?;
-        read_answer(input, timeout)
-    })();
-    tcsetattr(input, OptionalActions::Now, &before)?;
-    answered
-}
-
-/// The answer read from `input` as [`ask`] says.
-#[cfg(sessions)]
-fn read_answer(
-    input: std::os::fd::BorrowedFd<'_>,
-    timeout: Duration,
-) -> std::io::Result<Option<Answer>> {
-    use ratatui_image::picker::cap_parser::{Parser, Response};
-    use rustix::event::{poll, PollFd, PollFlags, Timespec};
-    let start = std::time::Instant::now();
+    use ratatui_image::picker::cap_parser::{Parser, QueryStdioOptions, Response};
+    let options = QueryStdioOptions {
+        timeout,
+        terminal_background_color_osc: true,
+        ..Default::default()
+    };
+    let mut query = Parser::query(tmux, options);
+    if !tmux {
+        // Before the status report it ends with.
+        let end = query.rfind("\x1b[5n").unwrap_or(query.len());
+        query.insert_str(end, crate::ask::KEYBOARD);
+    }
     let mut parser = Parser::new();
+    let mut keyboard = crate::ask::KeyboardReply::default();
     let mut answer = Answer::default();
-    loop {
-        let left = timeout.saturating_sub(start.elapsed());
-        if left.is_zero() {
-            return Ok(None);
-        }
-        let left = Timespec::try_from(left).map_err(std::io::Error::other)?;
-        let mut fds = [PollFd::new(&input, PollFlags::IN)];
-        match poll(&mut fds, Some(&left)) {
-            Ok(0) => continue,
-            Ok(_) => {}
-            Err(rustix::io::Errno::INTR) => continue,
-            Err(e) => return Err(e.into()),
-        }
-        let mut byte = [0u8];
-        match rustix::io::read(input, &mut byte) {
-            Ok(0) => return Ok(None),
-            Ok(_) => {}
-            Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN) => continue,
-            Err(e) => return Err(e.into()),
-        }
-        for response in parser.push(char::from(byte[0])) {
+    let ended = crate::ask::ask(input, output, query.as_bytes(), timeout, |b| {
+        keyboard.push(b);
+        for response in parser.push(char::from(b)) {
             match response {
-                Response::Status => return Ok(Some(answer)),
                 Response::Kitty => answer.protocol = Some(ProtocolType::Kitty),
                 Response::Sixel => {
                     answer.protocol.get_or_insert(ProtocolType::Sixel);
@@ -398,7 +442,9 @@ fn read_answer(
                 _ => {}
             }
         }
-    }
+    })?;
+    answer.keyboard_enhancement = keyboard.heard;
+    Ok(ended.then_some(answer))
 }
 
 #[cfg(test)]

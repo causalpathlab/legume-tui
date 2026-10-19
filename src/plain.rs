@@ -34,6 +34,14 @@ pub(crate) mod dir {
     pub(crate) fn read_terminal_env(_: &Path, _: &str) -> Option<Vec<(String, String)>> {
         None
     }
+
+    pub(crate) fn write_leave(_: &Path, _: &str, _: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub(crate) fn take_leave(_: &Path, _: &str) -> Option<String> {
+        None
+    }
 }
 
 /// No stop is taken: the program ends as by default.
@@ -46,6 +54,10 @@ pub(crate) mod stop {
     impl Armed {
         pub(crate) fn new() -> Option<Self> {
             None
+        }
+
+        pub(crate) fn outer(&self) -> bool {
+            match *self {}
         }
     }
 
@@ -65,4 +77,13 @@ pub(crate) mod stop {
     pub(crate) fn wait(mut child: Child, _passes: bool) -> io::Result<ExitStatus> {
         child.wait()
     }
+
+    /// No hangup is passed on here: nothing is hosted.
+    #[cfg_attr(not(feature = "child"), allow(dead_code))]
+    pub(crate) fn hold_group(_group: i32) -> bool {
+        false
+    }
+
+    #[cfg_attr(not(feature = "child"), allow(dead_code))]
+    pub(crate) fn release_group(_group: i32) {}
 }

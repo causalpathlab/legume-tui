@@ -6,11 +6,14 @@
 //! between sessions with the key, and kill, leaving no process or socket
 //! behind. Programs that misbehave: one that fails at once, one slow to
 //! start its screen, one that stops reading its input. The demo sets
-//! SIGPIPE to its default, as some tools do.
+//! SIGPIPE to its default, as some tools do. Then what a program leaves
+//! and holds for the user, work a stop waits for, children in groups of
+//! their own when the host is lost, and a terminal's canned answers read
+//! off the modelled screen.
 
 #![cfg(sessions)]
 
-use legume_tui::testing::{alive, Private, PROMPT, WAIT};
+use legume_tui::testing::{alive, Private, Replies, Setup, PROMPT, WAIT};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
@@ -585,5 +588,286 @@ fn kill_reaches_a_child_run_before_the_screen_then_ends_the_program() {
     t.wait_for("[demo-first-1 exited with status 143]");
     assert!(!t.text().contains("demo-first after"));
     assert!(t.cooked());
+    assert!(dir.is_empty());
+}
+
+/// Detach `t` by the key, keeping its session unnamed.
+fn detach(t: &mut legume_tui::testing::Term) {
+    t.type_(b"\x1b\x04");
+    t.answer(1, b"\r");
+    assert_eq!(t.exit_code(), 0);
+}
+
+#[test]
+fn what_a_program_leaves_is_said_once_where_it_will_be_read() {
+    let dir = private();
+    // Attached as it ends: said on the terminal, after the screen.
+    let mut t = dir.term(&["bye"], &[]);
+    t.wait_screen("demo-bye waiting");
+    t.type_(b"q");
+    assert_eq!(t.exit_code(), 0);
+    t.wait_for("demo-bye: left by the quit path");
+    assert!(!t.alternate(), "said on the user's own screen");
+    assert!(dir.is_empty(), "taken once said: {:?}", dir.path());
+
+    // Ended by a `kill` with nobody attached: the kill says it.
+    let mut t = dir.term(&["bye"], &[]);
+    t.wait_screen("demo-bye waiting");
+    detach(&mut t);
+    let said = dir.run(&["kill"]);
+    assert!(said.contains("demo-bye-1 stopped"), "{said:?}");
+    assert!(said.contains("demo-bye: left by the quit path"), "{said:?}");
+    assert!(dir.is_empty());
+
+    // Ended on its own while detached: the next `sessions` says it, once.
+    let folder = tempfile::tempdir().unwrap();
+    let mut t = dir.term_with(&["bye"], &[], Setup::new().cwd(folder.path()));
+    t.wait_screen("demo-bye waiting");
+    detach(&mut t);
+    let pid = dir.program_pid();
+    std::fs::write(folder.path().join("end"), "").unwrap();
+    dir.gone(pid);
+    let listed = dir.run(&["sessions"]);
+    assert!(
+        listed.contains("demo-bye-1 ended: demo-bye: left on its own"),
+        "{listed:?}"
+    );
+    assert!(!dir.run(&["sessions"]).contains("ended"), "said once");
+
+    // Or the next start of the tool does.
+    std::fs::remove_file(folder.path().join("end")).unwrap();
+    let mut t = dir.term_with(&["bye"], &[], Setup::new().cwd(folder.path()));
+    t.wait_screen("demo-bye waiting");
+    detach(&mut t);
+    let pid = dir.program_pid();
+    std::fs::write(folder.path().join("end"), "").unwrap();
+    dir.gone(pid);
+    let mut again = dir.term(&["bye"], &[]);
+    again.wait_for("demo-bye-1 ended: demo-bye: left on its own");
+    again.wait_screen("demo-bye waiting");
+    again.type_(b"q");
+    assert_eq!(again.exit_code(), 0);
+    assert!(dir.is_empty());
+}
+
+#[test]
+fn an_error_held_while_detached_is_seen_on_the_next_attach() {
+    let dir = private();
+    let folder = tempfile::tempdir().unwrap();
+    let mut t = dir.term_with(&["error"], &[], Setup::new().cwd(folder.path()));
+    t.wait_screen("demo-error waiting");
+    detach(&mut t);
+    let pid = dir.program_pid();
+    std::fs::write(folder.path().join("end"), "").unwrap();
+    dir.wait_listed("stopped: demo-error: the input went away");
+    assert!(alive(pid), "held for the user");
+
+    let mut back = dir.term(&["attach"], &[]);
+    back.wait_screen("any key quits");
+    assert!(back.screen().contains("demo-error: the input went away"));
+    let shown = back.seen_len();
+    back.type_(b"x");
+    assert_eq!(back.exit_code(), 2);
+    back.wait_for_after(shown, "Error: demo-error: the input went away");
+    back.wait_for("[demo-error-1 exited with status 2]");
+    // Said by the program, which a terminal heard: not left as well.
+    said_once_after_the_screen(&back.text(), "demo-error: the input went away");
+    assert!(back.cooked());
+    assert!(dir.is_empty());
+
+    // Ended by a `kill` while held: the kill says it, once.
+    std::fs::remove_file(folder.path().join("end")).unwrap();
+    let mut t = dir.term_with(&["error"], &[], Setup::new().cwd(folder.path()));
+    t.wait_screen("demo-error waiting");
+    detach(&mut t);
+    std::fs::write(folder.path().join("end"), "").unwrap();
+    dir.wait_listed("stopped: demo-error");
+    let said = dir.run(&["kill"]);
+    assert!(said.contains("demo-error-1 stopped"), "{said:?}");
+    assert_eq!(said.matches("the input went away").count(), 1, "{said:?}");
+    assert!(dir.is_empty());
+}
+
+/// That `needle` is said once in `text` after the last time it left the
+/// alternate screen.
+fn said_once_after_the_screen(text: &str, needle: &str) {
+    let after = text.rfind("\x1b[?1049l").map_or(text, |at| &text[at..]);
+    assert_eq!(after.matches(needle).count(), 1, "{after:?}");
+}
+
+#[test]
+fn an_error_seen_as_it_happens_is_said_once() {
+    let dir = private();
+    let folder = tempfile::tempdir().unwrap();
+    let end = folder.path().join("end");
+    // Attached: the program says it, through the session.
+    let mut t = dir.term_with(&["error"], &[], Setup::new().cwd(folder.path()));
+    t.wait_screen("demo-error waiting");
+    std::fs::write(&end, "").unwrap();
+    assert_eq!(t.exit_code(), 2);
+    t.wait_for("[demo-error-1 exited with status 2]");
+    said_once_after_the_screen(&t.text(), "demo-error: the input went away");
+    assert!(dir.is_empty(), "nothing left: {:?}", dir.sockets());
+    // Plain: the program alone says it.
+    std::fs::remove_file(&end).unwrap();
+    let plain = [(legume_tui::NO_DETACH_VAR, "1")];
+    let mut t = dir.term_with(&["error"], &plain, Setup::new().cwd(folder.path()));
+    t.wait_screen("demo-error waiting");
+    std::fs::write(&end, "").unwrap();
+    assert_eq!(t.exit_code(), 2);
+    t.wait_for("Error: demo-error: the input went away");
+    said_once_after_the_screen(&t.text(), "demo-error: the input went away");
+}
+
+#[test]
+fn kill_waits_for_a_child_run_as_work_a_stop_waits_for() {
+    let dir = private();
+    let mut t = dir.term(&["task"], &[]);
+    t.wait_for("nested-repaint-1");
+    let said = dir.run(&["kill"]);
+    assert!(said.contains("demo-task-1 stopped"), "{said:?}");
+    // Passed on to the child, then the work went on to its end.
+    t.wait_for("nested done after 1 repaints");
+    assert_eq!(t.exit_code(), 0);
+    t.wait_for("demo-task done");
+    t.wait_for("demo-task stopped after its work");
+    assert!(dir.is_empty());
+}
+
+#[test]
+fn kill_waits_for_work_a_stop_waits_for() {
+    let dir = private();
+    let mut t = dir.term(&["work"], &[]);
+    t.wait_for("demo-work working");
+    let said = dir.run(&["kill"]);
+    assert!(said.contains("demo-work-1 stopped"), "{said:?}");
+    // Not ended by the signal: the work finished, then the program saw
+    // the stop.
+    assert_eq!(t.exit_code(), 0);
+    t.wait_for("demo-work done");
+    t.wait_for("demo-work stopped after its work");
+    assert!(dir.is_empty());
+}
+
+/// The fit's and the save's pids, from the program's status.
+fn jobs_of(dir: &Private) -> (u32, u32) {
+    let listed = dir.wait_listed("jobs fit=");
+    let pid = |key: &str| -> u32 {
+        let at = listed.find(key).unwrap() + key.len();
+        let digits: String = listed[at..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().unwrap()
+    };
+    (pid("fit="), pid("save="))
+}
+
+/// End process `pid`, if it is still there.
+fn end(pid: u32) {
+    if let Some(p) = rustix::process::Pid::from_raw(pid as i32) {
+        let _ = rustix::process::kill_process(p, rustix::process::Signal::KILL);
+    }
+}
+
+#[test]
+fn a_lost_host_ends_the_fits_its_program_held_but_not_a_save() {
+    let dir = private();
+    let folder = tempfile::tempdir().unwrap();
+    let setup = || Setup::new().cwd(folder.path());
+    let mut t = dir.term_with(&["jobs"], &[], setup());
+    t.wait_screen("demo-jobs fit=");
+    let (fit, save) = jobs_of(&dir);
+    let program = dir.program_pid();
+    // The host lost: its program hangs up, and passes it on.
+    let ps = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &program.to_string()])
+        .output()
+        .unwrap();
+    let host: i32 = String::from_utf8_lossy(&ps.stdout).trim().parse().unwrap();
+    let host = rustix::process::Pid::from_raw(host).unwrap();
+    rustix::process::kill_process(host, rustix::process::Signal::KILL).unwrap();
+    assert_eq!(t.exit_code(), 1);
+    dir.gone(program);
+    dir.gone(fit);
+    let spared = alive(save);
+    // Its stderr went with the host; a save that bears that finishes.
+    std::fs::write(folder.path().join("go"), "").unwrap();
+    let saved = folder.path().join("saved");
+    let start = Instant::now();
+    while !saved.exists() && start.elapsed() < WAIT {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    end(save);
+    assert!(spared, "a save outlives the hangup to write what it has");
+    assert!(saved.exists(), "the save wrote what it had");
+    std::fs::remove_file(folder.path().join("go")).unwrap();
+
+    // Quit by its key: the fit is stopped, the save let finish.
+    let mut t = dir.term_with(&["jobs"], &[], setup());
+    t.wait_screen("demo-jobs fit=");
+    let (fit, save) = jobs_of(&dir);
+    t.type_(b"q");
+    assert_eq!(t.exit_code(), 0);
+    dir.gone(fit);
+    let spared = alive(save);
+    end(save);
+    assert!(spared);
+}
+
+#[test]
+fn the_probe_reads_the_terminals_answers_off_the_screen() {
+    let dir = private();
+    let kitty = Replies::plain()
+        .kitty()
+        .keyboard(1)
+        .cell(10, 20)
+        .background(1, 2, 3);
+    let ssh = [("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22")];
+    let mut t = dir.term_with(&["probe"], &ssh, Setup::new().replies(kitty.clone()));
+    t.wait_screen("protocol=Kitty");
+    let screen = t.screen();
+    for line in [
+        "background=Some((1, 2, 3))",
+        "keyboard=true",
+        "transport=Inline",
+    ] {
+        assert!(screen.contains(line), "{line:?} in {screen}");
+    }
+    assert!(t.alternate());
+    t.type_(b"q");
+    assert_eq!(t.exit_code(), 0);
+    assert!(!t.alternate());
+
+    // Plain too, the terminal its own, reached here.
+    let plain = [
+        (legume_tui::NO_DETACH_VAR, "1"),
+        ("SSH_CONNECTION", ""),
+        ("SSH_CLIENT", ""),
+        ("SSH_TTY", ""),
+    ];
+    let mut t = dir.term_with(&["probe"], &plain, Setup::new().replies(kitty));
+    t.wait_screen("keyboard=true");
+    assert!(t.screen().contains("protocol=Kitty"));
+    assert!(t.screen().contains("transport=File"));
+    t.type_(b"q");
+    assert_eq!(t.exit_code(), 0);
+
+    // A terminal with nothing more than every one has.
+    let mut t = dir.term(&["probe"], &[]);
+    t.wait_screen("protocol=Halfblocks");
+    assert!(t.screen().contains("keyboard=false"));
+    assert!(t.screen().contains("background=None"));
+    t.type_(b"q");
+    assert_eq!(t.exit_code(), 0);
+
+    // One that never answers: its environment's guess.
+    let kitty_env = [("KITTY_WINDOW_ID", "1")];
+    let silent = Setup::new().replies(Replies::silent());
+    let mut t = dir.term_with(&["probe"], &kitty_env, silent);
+    t.wait_screen("protocol=Kitty");
+    assert!(t.screen().contains("keyboard=false"));
+    t.type_(b"q");
+    assert_eq!(t.exit_code(), 0);
     assert!(dir.is_empty());
 }

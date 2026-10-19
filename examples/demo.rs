@@ -11,11 +11,23 @@
 //! misbehave on purpose: `demo fail` says an error and exits at once,
 //! `demo slow` loads for a long time before its screen, and `demo stall`
 //! stops reading its input.
+//!
+//! Others show what a program leaves and holds: `demo bye` leaves a line
+//! when it ends (by q, a `kill`, or a file named `end` appearing in its
+//! folder), `demo error` holds an error there instead and then says it as
+//! a program ending with one does, `demo work` works a while before any
+//! screen with a stop waiting for it, `demo task` runs the nested screen
+//! as such work, `demo jobs` holds a fit and a save in process groups of
+//! their own (the save writes once a file named `go` appears in its
+//! folder), and `demo probe` shows what the attached terminal answered.
 
+use legume_tui::child::Stopper;
 use legume_tui::cli::{AttachArgs, KillArgs, RenameArgs};
-use legume_tui::{Options, Tool};
-use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind};
+use legume_tui::graphics::{self, Fallback, Graphics};
+use legume_tui::{Group, Keyboard, Modes, Options, Round, Tool};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyboardEnhancementFlags};
 use ratatui::widgets::Paragraph;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -91,6 +103,37 @@ fn main() -> std::io::Result<()> {
             };
             return screen("view", "demo-screen", &opts, TICK);
         }
+        Some("bye") => return bye(false),
+        Some("error") => return bye(true),
+        Some("work") => {
+            let session = TOOL.session("work", &Options::default())?;
+            // A stop waits for the work: it is not one to cut short.
+            session.stoppable(|| {
+                println!("demo-work working");
+                std::thread::sleep(Duration::from_secs(1));
+                println!("demo-work done");
+            });
+            if session.stop_requested() {
+                println!("demo-work stopped after its work");
+            }
+            return Ok(());
+        }
+        Some("task") => {
+            let session = TOOL.session("task", &Options::default())?;
+            // A stop passed on to the child, and waited for with the rest.
+            session.stoppable(|| -> std::io::Result<()> {
+                let mut nested = Command::new(std::env::current_exe()?);
+                session.run_child(nested.arg("nested"))?;
+                println!("demo-task done");
+                Ok(())
+            })?;
+            if session.stop_requested() {
+                println!("demo-task stopped after its work");
+            }
+            return Ok(());
+        }
+        Some("jobs") => return jobs(),
+        Some("probe") => return probe(),
         _ => {}
     }
     screen("view", "demo-screen", &Options::default(), TICK)
@@ -108,11 +151,11 @@ fn screen(screen: &str, label: &str, opts: &Options, wait: Duration) -> std::io:
     let mut repaints = 0;
     let mut ticks = 0u64;
     loop {
-        let event = session.poll_with(&mut terminal, wait, || {
+        let round = session.poll_with(&mut terminal, wait, || {
             repaints += 1;
             Ok(())
         })?;
-        if session.stop_requested() {
+        if round == Round::Stopped {
             break;
         }
         session.status(&format!("{label} after {repaints} repaints"));
@@ -128,7 +171,9 @@ fn screen(screen: &str, label: &str, opts: &Options, wait: Duration) -> std::io:
         session.draw(&mut terminal, |f| {
             f.render_widget(Paragraph::new(text), f.area())
         })?;
-        let Some(Event::Key(k)) = event else { continue };
+        let Some(Event::Key(k)) = round.event() else {
+            continue;
+        };
         if k.kind == KeyEventKind::Release {
             continue;
         }
@@ -137,7 +182,7 @@ fn screen(screen: &str, label: &str, opts: &Options, wait: Duration) -> std::io:
             KeyCode::Char('n') => {
                 let mut which = Command::new(std::env::current_exe()?);
                 which.arg("which");
-                session.command(&mut which).status()?;
+                session.command(&mut which, Group::Shared).status()?;
             }
             // The screen hands the terminal over, and takes it back to
             // repaint; `kill` reaches the nested one through us.
@@ -150,5 +195,136 @@ fn screen(screen: &str, label: &str, opts: &Options, wait: Duration) -> std::io:
     }
     session.restore();
     println!("{label} done after {repaints} repaints");
+    Ok(())
+}
+
+/// Whether the user ended `round`: q, or a `kill`.
+fn quits(round: &Round) -> bool {
+    match round {
+        Round::Stopped => true,
+        Round::Event(Event::Key(k)) => {
+            k.kind != KeyEventKind::Release && k.code == KeyCode::Char('q')
+        }
+        _ => false,
+    }
+}
+
+/// A screen that ends on q, a `kill`, or a file named `end` appearing in
+/// its folder, and leaves a line saying so; with `error`, the file ends it
+/// with an error, held where it will be seen.
+fn bye(error: bool) -> std::io::Result<()> {
+    let screen = if error { "error" } else { "bye" };
+    let session = TOOL.session(screen, &Options::default())?;
+    let mut terminal = session.terminal()?;
+    loop {
+        session.draw(&mut terminal, |f| {
+            f.render_widget(Paragraph::new(format!("demo-{screen} waiting")), f.area())
+        })?;
+        let round = session.poll(&mut terminal, TICK)?;
+        if quits(&round) {
+            session.leave(&format!("demo-{screen}: left by the quit path"));
+            break;
+        }
+        if Path::new("end").exists() {
+            if error {
+                let error = "demo-error: the input went away";
+                session.hold_error(&mut terminal, error)?;
+                session.restore();
+                // As `main` returning it says it.
+                eprintln!("Error: {error}");
+                std::process::exit(2);
+            }
+            session.leave("demo-bye: left on its own");
+            break;
+        }
+    }
+    session.restore();
+    Ok(())
+}
+
+/// A screen holding two children in process groups of their own, a fit
+/// and a save, their pids its status; on q or a `kill`, the fit is
+/// stopped and the save let finish. The save waits for a file named `go`,
+/// then says so on the program's stderr, which may be gone by then, and
+/// writes `saved`.
+fn jobs() -> std::io::Result<()> {
+    let session = TOOL.session("jobs", &Options::default())?;
+    let env = session.child_env();
+    let start = |stopper: &Stopper, script: &str| -> std::io::Result<u32> {
+        let mut sh = Command::new("sh");
+        let child = env.apply(sh.args(["-c", script]), Group::Own).spawn()?;
+        let pid = child.id();
+        stopper.hold(child);
+        Ok(pid)
+    };
+    let (fit, save) = (Stopper::new(), Stopper::saving());
+    let saving = "while [ ! -e go ]; do sleep 0.1; done; echo saving >&2; echo saved > saved";
+    let status = format!(
+        "jobs fit={} save={}",
+        start(&fit, "exec sleep 300")?,
+        start(&save, saving)?
+    );
+    let mut terminal = session.terminal()?;
+    loop {
+        session.status(&status);
+        session.draw(&mut terminal, |f| {
+            f.render_widget(Paragraph::new(format!("demo-{status}")), f.area())
+        })?;
+        if quits(&session.poll(&mut terminal, TICK)?) {
+            break;
+        }
+    }
+    session.restore();
+    fit.quit();
+    save.quit();
+    for stopper in [fit, save] {
+        if let Some(mut child) = stopper.release() {
+            if stopper.saves() {
+                // Not waited for here: the test ends it.
+                continue;
+            }
+            child.wait()?;
+        }
+    }
+    Ok(())
+}
+
+/// A screen showing what the attached terminal answered: its picture
+/// protocol (asked, else guessed), its background, whether it has kitty's
+/// keyboard, and how kitty's pictures would reach it.
+fn probe() -> std::io::Result<()> {
+    let session = TOOL.session("probe", &Options::default())?;
+    let modes = Modes::new().keyboard_enhancement(Keyboard::IfSupported(
+        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+    ));
+    let mut terminal = session.terminal_with(modes)?;
+    let mut said = String::from("demo-probe asking");
+    loop {
+        session.draw(&mut terminal, |f| {
+            f.render_widget(Paragraph::new(said.as_str()), f.area())
+        })?;
+        let mut asked = None;
+        let round = session.poll_with(&mut terminal, TICK, || {
+            asked = Some(graphics::pick_with(
+                &session,
+                Graphics::Auto,
+                Fallback::ProbeThenEnv,
+            ));
+            Ok(())
+        })?;
+        if let Some((picker, answer)) = asked {
+            said = format!(
+                "protocol={:?}\nbackground={:?}\nkeyboard={}\ntransport={:?}",
+                picker.protocol_type(),
+                answer.and_then(|a| a.background),
+                session.keyboard_enhanced(),
+                graphics::kitty_transport(&session),
+            );
+        }
+        if quits(&round) {
+            break;
+        }
+    }
+    session.restore();
     Ok(())
 }

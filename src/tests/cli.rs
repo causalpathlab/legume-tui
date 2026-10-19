@@ -33,12 +33,10 @@ fn the_session_paragraph_says_it_all_by_default() {
 fn a_tool_says_it_in_its_own_words() {
     let help = session_help(
         &TOOL,
-        SessionHelp {
-            what_goes_on: Some("the fits go on"),
-            resume_hint: "`tool run` with no folder",
-            more: Some("`?` shows the keys in effect."),
-            ..Default::default()
-        },
+        SessionHelp::new()
+            .what_goes_on("the fits go on")
+            .resume_hint(Some("`tool run` with no folder"))
+            .more("`?` shows the keys in effect."),
     );
     let said = flat(&help);
     for part in [
@@ -48,6 +46,43 @@ fn a_tool_says_it_in_its_own_words() {
     ] {
         assert!(said.contains(part), "{part:?} in {said}");
     }
+}
+
+#[test]
+fn a_tui_on_something_named_or_behind_a_flag_says_so() {
+    let help = session_help(
+        &TOOL,
+        SessionHelp::new()
+            .lead("With --interactive, a view opens first.")
+            .resume_hint(None),
+    );
+    let said = flat(&help);
+    assert!(
+        said.starts_with("With --interactive, a view opens first. In an interactive"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("offers the live sessions to return to"),
+        "{said}"
+    );
+    assert!(
+        said.contains(
+            "Starting it again starts a new session, naming the detached ones; \
+             `tool attach` offers them to return to"
+        ),
+        "{said}"
+    );
+    assert!(help.lines().all(|l| l.chars().count() <= HELP_WIDTH));
+}
+
+#[test]
+fn kill_stops_a_session_as_the_tool_says() {
+    let quit_key = about(&TOOL, QUIT_KEY);
+    assert!(flat(&quit_key.kill).starts_with("Stop a `tool` session as its quit key does"));
+    let ctrl_c = about(&TOOL, "ctrl+c in it");
+    assert!(flat(&ctrl_c.kill).starts_with("Stop a `tool` session as ctrl+c in it does"));
+    assert!(ctrl_c.kill.lines().all(|l| l.chars().count() <= HELP_WIDTH));
+    assert!(ctrl_c.attach.contains("`tool attach`") || ctrl_c.attach.contains("`tool`"));
 }
 
 #[test]

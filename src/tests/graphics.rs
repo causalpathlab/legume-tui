@@ -2,7 +2,7 @@
 //! and that it leaves nothing reading after it.
 
 use super::*;
-use crate::Bypass;
+use crate::Tool;
 
 #[test]
 fn a_named_protocol_is_taken_and_blocks_never_ask() {
@@ -11,8 +11,8 @@ fn a_named_protocol_is_taken_and_blocks_never_ask() {
     assert_eq!(Graphics::Sixel.protocol(), Some(ProtocolType::Sixel));
     assert_eq!(Graphics::Iterm2.protocol(), Some(ProtocolType::Iterm2));
     assert_eq!(Graphics::Blocks.protocol(), Some(ProtocolType::Halfblocks));
-    let session = Session::plain(Bypass::Flag);
-    for fallback in [Fallback::Probe, Fallback::Env] {
+    let session = Session::plain(&Tool::new("tool"));
+    for fallback in [Fallback::Probe, Fallback::Env, Fallback::ProbeThenEnv] {
         let p = pick(&session, Graphics::Blocks, fallback);
         assert_eq!(p.protocol_type(), ProtocolType::Halfblocks);
     }
@@ -126,6 +126,56 @@ fn tmux_is_found_from_the_attached_terminals_environment() {
 }
 
 #[test]
+fn kitty_pictures_go_inline_over_ssh_and_through_a_file_elsewhere() {
+    assert_eq!(transport_from_env(env(&[])), Transport::File);
+    assert_eq!(
+        transport_from_env(env(&[("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22")])),
+        Transport::Inline
+    );
+    assert_eq!(
+        transport_from_env(env(&[("SSH_TTY", "/dev/pts/1")])),
+        Transport::Inline
+    );
+    assert_eq!(
+        transport_from_env(env(&[("SSH_CLIENT", "")])),
+        Transport::File
+    );
+}
+
+#[test]
+fn a_tools_own_choice_is_taken_and_reprobe_says_what_changed() {
+    let session = Session::plain(&Tool::new("tool"));
+    // Without a terminal to ask (stdin is not one in a test): no answer.
+    for wanted in [
+        ProtocolType::Kitty,
+        ProtocolType::Iterm2,
+        ProtocolType::Halfblocks,
+    ] {
+        let (p, answer) = pick_protocol(&session, Some(wanted), Fallback::Env);
+        assert_eq!(p.protocol_type(), wanted);
+        assert_eq!(answer, None);
+    }
+    let blocks = Picker::halfblocks();
+    let (repick, _) = reprobe_with(&session, &blocks, Graphics::Blocks, Fallback::Probe);
+    assert!(matches!(repick, Repick::Same));
+    let (repick, _) = reprobe_with(&session, &blocks, Graphics::Sixel, Fallback::Env);
+    assert!(matches!(repick, Repick::Changed(p) if p.protocol_type() == ProtocolType::Sixel));
+    #[allow(deprecated)]
+    let mut kitty = Picker::from_fontsize((10, 20).into());
+    kitty.set_protocol_type(ProtocolType::Kitty);
+    assert!(matches!(repick_kitty(&kitty), Repick::Resend));
+}
+
+/// What pictures made with `kitty` need when kitty is picked again, at
+/// the same size.
+fn repick_kitty(kitty: &Picker) -> Repick {
+    #[allow(deprecated)]
+    let mut again = Picker::from_fontsize((10, 20).into());
+    again.set_protocol_type(ProtocolType::Kitty);
+    repick(kitty, again)
+}
+
+#[test]
 fn a_cells_pixel_size_comes_from_the_window_size() {
     assert_eq!(cell_pixels(200, 50, 2000, 1000), Some((10, 20)));
     assert_eq!(cell_pixels(200, 50, 0, 0), None, "not reported");
@@ -215,9 +265,30 @@ mod query {
                 protocol: Some(ProtocolType::Kitty),
                 cell: Some((10, 20)),
                 background: Some((255, 0, 128)),
+                keyboard_enhancement: false,
             })
         );
         assert_eq!(next_read(&program), b"q", "the key is left for the program");
+    }
+
+    #[test]
+    fn the_keyboard_is_asked_in_the_same_round_trip_but_not_through_tmux() {
+        let (mut terminal, program) = raw_pty();
+        terminal.write_all(b"\x1b[?62;22c\x1b[?1u\x1b[0n").unwrap();
+        let mut sent = Vec::new();
+        let answer = ask(program.as_fd(), &mut sent, false, Duration::from_secs(2)).unwrap();
+        assert!(answer.unwrap().keyboard_enhancement);
+        let sent = String::from_utf8_lossy(&sent).into_owned();
+        assert!(sent.ends_with("\x1b[?u\x1b[5n"), "{sent:?}");
+
+        terminal.write_all(b"\x1b[0n").unwrap();
+        let mut sent = Vec::new();
+        let answer = ask(program.as_fd(), &mut sent, true, Duration::from_secs(2)).unwrap();
+        assert!(!answer.unwrap().keyboard_enhancement);
+        assert!(
+            !String::from_utf8_lossy(&sent).contains("[?u"),
+            "not wrapped for tmux"
+        );
     }
 
     #[test]

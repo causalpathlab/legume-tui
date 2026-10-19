@@ -3,11 +3,15 @@
 //! [`crate::Session::restore`]) and while it waits for a child
 //! ([`crate::Session::run_child`]). Elsewhere (loading, say) it ends the
 //! program as by default. A second one while taken ends it too.
+//!
+//! Also a hangup, passed on to the children the program holds in process
+//! groups of their own: the kernel sends it to the terminal's foreground
+//! group only, so without this they would run on after their host is gone.
 
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::process::{Child, ExitStatus};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, OnceLock};
 
 /// What SIGTERM does here, set up once per process the first time a stop
@@ -55,17 +59,27 @@ fn register() -> io::Result<Stop> {
 }
 
 /// SIGTERM taken as a stop while this lives.
-pub(crate) struct Armed(());
+pub(crate) struct Armed {
+    /// Others took it already as this one was made.
+    outer: bool,
+}
 
 impl Armed {
     /// None if SIGTERM's handlers could not be set up: it keeps its
     /// default.
     pub fn new() -> Option<Self> {
         let stop = STOP.get_or_init(|| register().ok()).as_ref()?;
-        if stop.arms.fetch_add(1, SeqCst) == 0 {
+        let outer = stop.arms.fetch_add(1, SeqCst) > 0;
+        if !outer {
             stop.by_default.store(false, SeqCst);
         }
-        Some(Self(()))
+        Some(Self { outer })
+    }
+
+    /// Whether another [`Armed`] took the stop as this one was made: what
+    /// it guards decides what a stop does once this one is gone.
+    pub fn outer(&self) -> bool {
+        self.outer
     }
 }
 
@@ -138,4 +152,51 @@ pub(crate) fn wait(mut child: Child, passes: bool) -> io::Result<ExitStatus> {
     }
     let _ = waiter.join();
     child.wait()
+}
+
+/// The most process groups a hangup is passed on to.
+const GROUPS: usize = 64;
+
+/// The process groups of the children held now ([`hold_group`]); 0 for a
+/// free slot. Atomics, as the signal handler reads them.
+static HELD: [AtomicI32; GROUPS] = [const { AtomicI32::new(0) }; GROUPS];
+
+/// Pass a hangup of the program on to process group `group` (a child that
+/// leads its own) until [`release_group`]; false if it cannot be, as when
+/// SIGHUP's handlers could not be set up or too many are held.
+#[cfg_attr(not(feature = "child"), allow(dead_code))]
+pub(crate) fn hold_group(group: i32) -> bool {
+    static PASSED: OnceLock<bool> = OnceLock::new();
+    if group <= 0 || !*PASSED.get_or_init(|| pass_hangups().is_ok()) {
+        return false;
+    }
+    HELD.iter()
+        .any(|slot| slot.compare_exchange(0, group, SeqCst, SeqCst).is_ok())
+}
+
+/// No more hangups to process group `group`: its child is waited for.
+#[cfg_attr(not(feature = "child"), allow(dead_code))]
+pub(crate) fn release_group(group: i32) {
+    for slot in &HELD {
+        let _ = slot.compare_exchange(group, 0, SeqCst, SeqCst);
+    }
+}
+
+/// SIGHUP's handlers, in the order they run: the groups held hear it too,
+/// then the program ends as by default.
+fn pass_hangups() -> io::Result<()> {
+    use signal_hook::consts::SIGHUP;
+    // Only system calls, as a handler may.
+    unsafe {
+        signal_hook::low_level::register(SIGHUP, || {
+            use rustix::process::{kill_process_group, Pid, Signal};
+            for slot in &HELD {
+                if let Some(group) = Pid::from_raw(slot.load(SeqCst)) {
+                    let _ = kill_process_group(group, Signal::HUP);
+                }
+            }
+        })?;
+    }
+    signal_hook::flag::register_conditional_default(SIGHUP, Arc::new(AtomicBool::new(true)))?;
+    Ok(())
 }

@@ -29,6 +29,8 @@ pub enum Bypass {
     NoHost,
     /// Sessions are not supported on this platform.
     Unsupported,
+    /// The tool opened the screen plain itself ([`crate::Session::plain`]).
+    Tool,
 }
 
 /// What `session()` does.

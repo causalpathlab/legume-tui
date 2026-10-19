@@ -11,7 +11,7 @@ fn private() -> tempfile::TempDir {
 /// names, asking every host.
 fn claimed(dir: &Path, base: &str, name: Option<&str>) -> io::Result<(String, UnixListener)> {
     let tool = base.split('-').next().unwrap();
-    claim(dir, &format!("{tool}-"), base, name, &[])
+    claim(dir, &format!("{tool}-"), base, name, &[]).map(|c| (c.name, c.listener))
 }
 
 /// Drop `l`, and wait until nothing listens on `path`: a child another
@@ -73,6 +73,14 @@ fn stale_sockets_are_removed_and_live_ones_kept() {
 
     let listed = live(d.path(), "tool-").unwrap();
     assert!(listed.is_empty());
+    // A child another test forked meanwhile holds a copy of the stale one
+    // until it execs, which spares it as busy: asked again, it goes.
+    for _ in 0..3 {
+        if !stale.exists() {
+            break;
+        }
+        assert!(live(d.path(), "tool-").unwrap().is_empty());
+    }
     assert!(!stale.exists());
     assert!(quiet.exists());
     assert!(other.exists());
@@ -277,11 +285,15 @@ fn sessions_listed_just_now_are_taken_as_live_without_asking() {
         status: None,
     };
     let known = [listed];
-    let (id, _l) = claim(dir, "tool-", "tool-view", None, &known).unwrap();
-    assert_eq!(id, "tool-view-2");
+    let c = claim(dir, "tool-", "tool-view", None, &known).unwrap();
+    assert_eq!((c.name.as_str(), c.left), ("tool-view-2", None));
     let e = claim(dir, "tool-", "tool-run", Some("work"), &known).unwrap_err();
     assert!(e.to_string().contains("taken by tool-view-1"), "{e}");
-    // Not listed, it is asked, found stale, and its number is free.
-    let (id, _l) = claim(dir, "tool-", "tool-view", None, &[]).unwrap();
-    assert_eq!(id, "tool-view-1");
+    // Not listed, it is asked, found stale, and its number is free; what
+    // it left as it ended is handed over to be said, not lost.
+    write_leave(dir, "tool-view-1", "the run's summary").unwrap();
+    let c = claim(dir, "tool-", "tool-view", None, &[]).unwrap();
+    assert_eq!(c.name, "tool-view-1");
+    assert_eq!(c.left.as_deref(), Some("the run's summary"));
+    assert!(!leave_file(dir, "tool-view-1").exists(), "taken");
 }

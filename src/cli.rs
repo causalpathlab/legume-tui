@@ -11,26 +11,26 @@
 //!     /// Show a view
 //!     #[command(long_about = format!(
 //!         "Show a view.\n\n{}",
-//!         cli::session_help(&TOOL, cli::SessionHelp {
-//!             resume_hint: "`tool view` with no file",
-//!             ..Default::default()
-//!         })
+//!         cli::session_help(
+//!             &TOOL,
+//!             cli::SessionHelp::new().resume_hint(Some("`tool view` with no file")),
+//!         )
 //!     ))]
 //!     View {
 //!         #[command(flatten)]
 //!         session: cli::SessionArgs,
 //!     },
 //!     /// Return to a detached session
-//!     #[command(long_about = cli::about("tool").attach)]
+//!     #[command(long_about = cli::about(&TOOL, cli::QUIT_KEY).attach)]
 //!     Attach(cli::AttachArgs),
 //!     /// List the live sessions
-//!     #[command(long_about = cli::about("tool").sessions)]
+//!     #[command(long_about = cli::about(&TOOL, cli::QUIT_KEY).sessions)]
 //!     Sessions,
 //!     /// Stop a session
-//!     #[command(long_about = cli::about("tool").kill)]
+//!     #[command(long_about = cli::about(&TOOL, cli::QUIT_KEY).kill)]
 //!     Kill(cli::KillArgs),
 //!     /// Give a session a label
-//!     #[command(long_about = cli::about("tool").rename)]
+//!     #[command(long_about = cli::about(&TOOL, cli::QUIT_KEY).rename)]
 //!     Rename(cli::RenameArgs),
 //! }
 //!
@@ -50,8 +50,10 @@
 //! ```
 //!
 //! Sessions of a tool are those whose ids are `<tool>-...`. Each command
-//! that takes a session finds it by its label or by its id. Where sessions
-//! are not supported, the handlers say so and fail.
+//! that takes a session finds it by its label or by its id. `attach` and
+//! `sessions` first say, once, what the tool's ended sessions left
+//! ([`crate::Session::leave`]), and `kill` what the one it ended left.
+//! Where sessions are not supported, the handlers say so and fail.
 
 #[cfg(sessions)]
 use crate::dir::{self, Patience};
@@ -81,15 +83,22 @@ const FORCE_WAIT: Patience = Patience {
 pub const HELP_WIDTH: usize = 70;
 
 /// What a TUI subcommand's long help says about its session, in the
-/// tool's words ([`session_help`]).
+/// tool's words ([`session_help`]): the defaults, each changed in turn
+/// (`SessionHelp::new().resume_hint(None)`).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SessionHelp<'a> {
+    /// A sentence before the rest, for a TUI behind a flag: `With
+    /// --interactive, the view opens first.`
+    pub lead: Option<&'a str>,
     /// What goes on when the connection drops, with its verb: `the fits
     /// go on`; `its work goes on` when None.
     pub what_goes_on: Option<&'a str>,
     /// Who offers the live sessions to return to: `` `tool view` with no
-    /// file ``, or by default `Started again with nothing named, it`.
-    pub resume_hint: &'a str,
+    /// file ``, or by default `Started again with nothing named, it`. None
+    /// for a TUI that always opens on something named: each start is a new
+    /// session, and `attach` offers the live ones.
+    pub resume_hint: Option<&'a str>,
     /// Sentences added at the end, as `` `?` shows the keys in effect.``
     pub more: Option<&'a str>,
     /// The longest line ([`HELP_WIDTH`] by default).
@@ -98,12 +107,51 @@ pub struct SessionHelp<'a> {
 
 impl Default for SessionHelp<'_> {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'a> SessionHelp<'a> {
+    pub const fn new() -> Self {
         Self {
+            lead: None,
             what_goes_on: None,
-            resume_hint: "Started again with nothing named, it",
+            resume_hint: Some("Started again with nothing named, it"),
             more: None,
             width: HELP_WIDTH,
         }
+    }
+
+    pub const fn lead(self, lead: &'a str) -> Self {
+        Self {
+            lead: Some(lead),
+            ..self
+        }
+    }
+
+    pub const fn what_goes_on(self, what_goes_on: &'a str) -> Self {
+        Self {
+            what_goes_on: Some(what_goes_on),
+            ..self
+        }
+    }
+
+    pub const fn resume_hint(self, resume_hint: Option<&'a str>) -> Self {
+        Self {
+            resume_hint,
+            ..self
+        }
+    }
+
+    pub const fn more(self, more: &'a str) -> Self {
+        Self {
+            more: Some(more),
+            ..self
+        }
+    }
+
+    pub const fn width(self, width: usize) -> Self {
+        Self { width, ..self }
     }
 }
 
@@ -112,18 +160,28 @@ impl Default for SessionHelp<'_> {
 /// detach and switch keys, how to return, the subcommands, and how to run
 /// it plain.
 pub fn session_help(tool: &Tool, help: SessionHelp<'_>) -> String {
-    let mut text = format!(
+    let name = tool.name();
+    let resume = match help.resume_hint {
+        Some(hint) => format!(
+            "{hint} offers the live sessions to return to; `{name} attach`, \
+             `sessions`, `kill` and `rename` manage them."
+        ),
+        None => format!(
+            "Starting it again starts a new session, naming the detached \
+             ones; `{name} attach` offers them to return to, and `sessions`, \
+             `kill` and `rename` manage them."
+        ),
+    };
+    let mut text = help.lead.map_or(String::new(), |lead| format!("{lead} "));
+    text.push_str(&format!(
         "In an interactive terminal it runs as a detachable session, so {} \
          when the connection drops. ctrl+alt+d detaches (the first time, it \
          asks for a name; LEGUME_TUI_DETACH_KEY sets another key); ctrl+alt+s \
-         switches to another session (LEGUME_TUI_SWITCH_KEY). {} offers the \
-         live sessions to return to; `{} attach`, `sessions`, `kill` and \
-         `rename` manage them. --no-detach (or LEGUME_TUI_NO_DETACH=1) runs \
-         it in this terminal only.",
+         switches to another session (LEGUME_TUI_SWITCH_KEY). {resume} \
+         --no-detach (or LEGUME_TUI_NO_DETACH=1) runs it in this terminal \
+         only.",
         help.what_goes_on.unwrap_or("its work goes on"),
-        help.resume_hint,
-        tool.name(),
-    );
+    ));
     if let Some(more) = help.more {
         text.push(' ');
         text.push_str(more);
@@ -172,6 +230,7 @@ fn wrap_paragraph(paragraph: &str, width: usize) -> String {
 
 /// The long help of the session subcommands, for [`about`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct About {
     pub attach: String,
     pub sessions: String,
@@ -179,8 +238,13 @@ pub struct About {
     pub rename: String,
 }
 
-/// The long help of `tool`'s `attach`, `sessions`, `kill` and `rename`.
-pub fn about(tool: &str) -> About {
+/// What `kill` stops a session as, for [`about`]: its quit key.
+pub const QUIT_KEY: &str = "its quit key";
+
+/// The long help of `tool`'s `attach`, `sessions`, `kill` and `rename`;
+/// `kill` stops a session as `quit` does ([`QUIT_KEY`], or `ctrl+c in it`).
+pub fn about(tool: &Tool, quit: &str) -> About {
+    let tool = tool.name();
     About {
         attach: format!(
             "\
@@ -198,13 +262,17 @@ LEGUME_TUI_SWITCH_KEY) switches to another."
         sessions: format!(
             "\
 List the live `{tool}` sessions, one a line: label and id, attached or
-detached, age, pid, command line and what it is doing."
+detached, age, pid, command line and what it is doing. What ended
+sessions left (a summary, an error) follows, said once."
         ),
-        kill: format!(
-            "\
-Stop a `{tool}` session as its quit key does, letting it wrap up its work
-first; waits up to a minute for it to end. --force kills it at once, and
-what it started may then keep running."
+        kill: wrap(
+            &format!(
+                "Stop a `{tool}` session as {quit} does, letting it wrap up its \
+                 work first; waits up to a minute for it to end, and says what \
+                 it left. --force kills it at once, and what it started may \
+                 then keep running."
+            ),
+            HELP_WIDTH,
         ),
         rename: format!(
             "\
@@ -277,6 +345,9 @@ pub struct RenameArgs {
 #[cfg(sessions)]
 pub fn attach(tool: &Tool, args: &AttachArgs) -> io::Result<()> {
     let dir = crate::runtime_dir()?;
+    for (id, text) in dir::take_left(&dir, &tool.prefix()) {
+        eprintln!("{}", dir::ended(&id, &text));
+    }
     let terminal = rustix::termios::isatty(io::stdin()) && rustix::termios::isatty(io::stdout());
     let live = dir::live(&dir, &tool.prefix())?;
     let id = match args.name.as_deref() {
@@ -300,11 +371,13 @@ pub fn attach(tool: &Tool, args: &AttachArgs) -> io::Result<()> {
 
 /// Print `tool`'s live sessions, one a line: label and id (`label (id)`,
 /// or the id alone), state, age, pid, command line and status, tab
-/// separated. Stale sockets are removed on the way.
+/// separated; then what ended sessions left, once. Stale sockets are
+/// removed on the way.
 #[cfg(sessions)]
 pub fn sessions(tool: &Tool) -> io::Result<()> {
     let dir = crate::runtime_dir()?;
     let live = dir::live(&dir, &tool.prefix())?;
+    let left = dir::take_left(&dir, &tool.prefix());
     if live.is_empty() {
         println!("no live {} sessions", tool.name());
     }
@@ -318,6 +391,9 @@ pub fn sessions(tool: &Tool) -> io::Result<()> {
             l.command,
             l.status.as_deref().unwrap_or("")
         );
+    }
+    for (id, text) in left {
+        println!("{}", dir::ended(&id, &text));
     }
     Ok(())
 }
@@ -333,7 +409,12 @@ pub fn kill(tool: &Tool, args: &KillArgs) -> io::Result<()> {
     let patience = if args.force { FORCE_WAIT } else { STOP_WAIT };
     let waiting = || println!("waiting for {} to wrap up", found.name);
     match dir::stop_waiting(&path, args.force, patience, waiting)? {
-        true => println!("{} stopped", found.name),
+        true => {
+            println!("{} stopped", found.name);
+            if let Some(text) = dir::take_leave(&dir, &found.name) {
+                println!("{text}");
+            }
+        }
         false if args.force => println!("{} was killed; its host has not closed yet", found.name),
         false => println!(
             "asked {} to stop; it is still wrapping up (`{} kill --force {}` to end it now)",

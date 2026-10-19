@@ -488,6 +488,10 @@ fn report(dir: &Path, tool: &Tool, id: &str, outcome: &Outcome) -> i32 {
             1
         }
         Outcome::Exited { code, .. } => {
+            // What the program left, as it would have said it.
+            if let Some(text) = dir::take_leave(dir, id) {
+                eprintln!("{text}");
+            }
             if *code != 0 {
                 eprintln!("[{id} exited with status {code}]");
             }

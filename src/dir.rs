@@ -91,6 +91,12 @@ pub(crate) fn log_file(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.log"))
 }
 
+/// What the program of session `id` in `dir` leaves when it ends (see
+/// [`crate::Session::leave`]): kept after its socket goes, until shown.
+pub(crate) fn leave_file(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.leave"))
+}
+
 /// The session a socket's path is for: its id, if it is one.
 fn id_of(path: &Path) -> Option<&str> {
     path.file_name()?.to_str()?.strip_suffix(".sock")
@@ -133,14 +139,17 @@ fn bind_locked(path: &Path) -> io::Result<UnixListener> {
 /// (the tool's sessions as [`live`] just listed them); others are asked.
 /// Its socket is bound here, by the launching process, so two launches at
 /// once cannot share a name and the launcher knows the socket it reaches
-/// is its own host's.
+/// is its own host's. What an ended session of the id left
+/// ([`take_leave`]) is taken under the same lock, for the launch to say:
+/// a session that ended after the launch took what the ended ones left
+/// is not silenced by the new one taking its id.
 pub(crate) fn claim(
     dir: &Path,
     prefix: &str,
     base: &str,
     name: Option<&str>,
     known: &[Listed],
-) -> io::Result<(String, UnixListener)> {
+) -> io::Result<Claimed> {
     let _lock = lock(dir)?;
     let mut taken = Taken::read(dir, prefix, None, known)?;
     // Another live session that answers to id `id`, in full or short.
@@ -161,7 +170,12 @@ pub(crate) fn claim(
             let _ = std::fs::remove_file(&path);
             return Err(e);
         }
-        return Ok((id, listener));
+        let left = take_leave(dir, &id);
+        return Ok(Claimed {
+            name: id,
+            listener,
+            left,
+        });
     }
     for n in 1.. {
         let name = format!("{base}-{n}");
@@ -170,16 +184,30 @@ pub(crate) fn claim(
             continue;
         }
         match bind_locked(&socket(dir, &name)) {
-            Ok(l) => {
-                // A label an earlier session of the number left behind.
+            Ok(listener) => {
+                // What an earlier session of the number left behind.
                 let _ = std::fs::remove_file(label_file(dir, &name));
-                return Ok((name, l));
+                let left = take_leave(dir, &name);
+                return Ok(Claimed {
+                    name,
+                    listener,
+                    left,
+                });
             }
             Err(e) if e.kind() == io::ErrorKind::AddrInUse => continue,
             Err(e) => return Err(e),
         }
     }
     unreachable!("some number is free")
+}
+
+/// A session [`claim`] claimed.
+#[derive(Debug)]
+pub(crate) struct Claimed {
+    pub name: String,
+    pub listener: UnixListener,
+    /// What the ended session of the id left, taken.
+    pub left: Option<String>,
 }
 
 /// Refuse a name that would not make a plain file name.
@@ -202,6 +230,7 @@ pub(crate) fn check_name(name: &str) -> io::Result<()> {
 
 /// A live session, as `sessions` and the resume picker list it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Listed {
     /// The session's id, its socket's name.
     pub name: String,
@@ -356,6 +385,60 @@ pub(crate) fn write_terminal_env(
     replace_file(dir, id, "env", &text)
 }
 
+/// The longest text a program leaves ([`write_leave`]).
+const LEAVE_MAX: usize = 4096;
+
+/// Replace what session `id` in `dir` leaves when it ends at once: lines,
+/// their other control characters made spaces, cut at [`LEAVE_MAX`].
+pub(crate) fn write_leave(dir: &Path, id: &str, text: &str) -> io::Result<()> {
+    let text: String = text
+        .trim_end()
+        .chars()
+        .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
+        .take(LEAVE_MAX)
+        .collect();
+    replace_file(dir, id, "leave", &text)
+}
+
+/// What session `id` in `dir` left, taken away: shown once.
+pub(crate) fn take_leave(dir: &Path, id: &str) -> Option<String> {
+    let path = leave_file(dir, id);
+    let text = std::fs::read_to_string(&path).ok()?;
+    std::fs::remove_file(&path).ok()?;
+    Some(text)
+}
+
+/// What the ended sessions in `dir` whose ids start with `prefix` left,
+/// in id order, taken away: each id and its text. A live session's is
+/// left for when it ends.
+pub(crate) fn take_left(dir: &Path, prefix: &str) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut ended: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let id = name.strip_suffix(".leave")?;
+            (id.starts_with(prefix) && check_name(id).is_ok()).then(|| id.to_string())
+        })
+        .filter(|id| !alive(&socket(dir, id)))
+        .collect();
+    ended.sort_by(|a, b| natural(a, b));
+    ended
+        .into_iter()
+        .filter_map(|id| {
+            let text = take_leave(dir, &id)?;
+            Some((id, text))
+        })
+        .collect()
+}
+
+/// What `id` left, as a user reads it: `id ended: text`.
+pub(crate) fn ended(id: &str, text: &str) -> String {
+    format!("{id} ended: {text}")
+}
+
 /// What session `id` in `dir` has of the attached terminal's
 /// environment; None before any attach.
 pub(crate) fn read_terminal_env(dir: &Path, id: &str) -> Option<Vec<(String, String)>> {
@@ -465,8 +548,9 @@ fn taken_by(name: &str, other: &str) -> io::Error {
 }
 
 /// Remove what session `id` left in `dir` (socket, status, label, the
-/// terminal's environment and log), unless a live host has the id again; under the lock, so a launch
-/// claiming the id meanwhile keeps what it made.
+/// terminal's environment and log, but not what its program left to be
+/// shown, [`leave_file`]), unless a live host has the id again; under the
+/// lock, so a launch claiming the id meanwhile keeps what it made.
 pub(crate) fn clear(dir: &Path, id: &str) -> io::Result<()> {
     let _lock = lock(dir)?;
     let path = socket(dir, id);

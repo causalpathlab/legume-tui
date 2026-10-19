@@ -1,6 +1,6 @@
 [package]
 name = "legume-tui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -13,22 +13,28 @@ categories = ["command-line-interface"]
 include = ["src/**/*.rs", "tests/**/*.rs", "examples/**/*.rs", "build.rs", "README.md", "LICENSE"]
 
 [features]
-default = ["clap", "graphics", "logs"]
+default = ["clap", "graphics", "logs", "child"]
 # `attach`, `sessions` and `kill` as clap arguments a tool adds to its CLI.
 clap = ["dep:clap"]
 # Which image protocol the attached terminal speaks: named by the user,
 # asked of the terminal, or guessed from its environment.
 graphics = ["dep:ratatui-image"]
-# `logs::quiet`: no log lines over the screen while it is up.
+# No log lines over the screen while it is up: `logs::quiet`, and a gate
+# that holds or mutes the tool's own logger.
 logs = ["dep:log"]
-# A harness that drives a tool's TUI through pseudo-terminals, for its tests.
-testing = ["dep:tempfile"]
+# A stoppable runner of child processes that follows their logs and
+# progress bars (Unix).
+child = []
+# A harness that drives a tool's TUI through pseudo-terminals, for its tests:
+# canned terminal answers and a model of the visible screen.
+testing = ["dep:tempfile", "dep:vt100"]
 
 [dependencies]
 ratatui = "0.30"
 ratatui-image = { version = "11.1", optional = true, default-features = false, features = ["crossterm"] }
 clap = { version = "4.5.20", optional = true, features = ["derive"] }
 tempfile = { version = "3.2", optional = true }
+vt100 = { version = "0.16", optional = true }
 log = { version = "0.4", optional = true }
 
 # Pseudo-terminals, sessions and signals; Unix only.
@@ -38,7 +44,17 @@ signal-hook = { version = "0.3", default-features = false }
 
 [[example]]
 name = "demo"
-required-features = ["clap"]
+required-features = ["clap", "graphics", "logs", "child"]
+
+# The end-to-end tests drive the demo: built only where it is, so they
+# never run a demo left behind by another build.
+[[test]]
+name = "e2e"
+required-features = ["clap", "graphics", "logs", "child"]
+
+[[test]]
+name = "child"
+required-features = ["child"]
 
 [dev-dependencies]
 tempfile = "3.2"

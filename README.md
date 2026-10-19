@@ -8,7 +8,9 @@ Ctrl+Alt+S moves the terminal to another of the tool's sessions.
 
 It also holds what the tools' terminal UIs share: picking the image
 protocol of the attached terminal, the session subcommands and their help,
-and keeping log lines off the screen.
+keeping log lines off the screen, running and following the child
+processes a screen starts, and a test harness that drives a TUI through
+pseudo-terminals.
 
 Sessions need Unix (Linux and macOS). Elsewhere the same calls run every
 TUI plain, in the terminal it started in, and the session subcommands say
@@ -16,7 +18,7 @@ that sessions are not supported there; a tool needs no `cfg` of its own.
 
 ```toml
 [dependencies]
-legume-tui = "0.2"
+legume-tui = "0.3"
 ```
 
 ## Adopting it in a tool
@@ -26,24 +28,91 @@ legume-tui = "0.2"
 2. `TOOL.session("screen", &opts)` at each TUI, in place of
    `ratatui::init()`, before work the program would otherwise repeat
    (`const TOOL: legume_tui::Tool = legume_tui::Tool::new("tool")`).
+   Code far from there (a worker thread) reaches the same session with
+   `legume_tui::current()`. A screen the tool opens by itself, never
+   hosted, takes `Session::plain(&TOOL)`.
 3. Each round of the loop: `session.draw` (nothing while detached),
    `session.status` (one line for the picker and `sessions`), and
-   `session.poll` or `poll_with` in place of crossterm's poll.
-4. `session.terminal_with(Modes { .. })` for the screen and its modes
+   `session.poll` or `poll_with` in place of crossterm's poll; the
+   `Round` it returns says whether an event came, the time ran out, the
+   screen was repainted (draw it whole) or a `kill` asked to stop.
+4. `session.terminal_with(Modes::new().mouse(..))` for the screen and its modes
    (mouse, keyboard enhancement, paste, focus), and `session.restore()`
-   at the end, in place of `ratatui::restore()`.
-5. Pictures: `graphics::pick` once the screen is up, and
-   `graphics::reprobe` in the `poll_with` hook after every attach.
-6. `session.run_child(&mut command)` for a program the TUI hands the
-   terminal to, `session.command` for one the tool waits for itself, and
-   `session.off_screen(|| ..)` for its own work on the normal screen.
-7. The `attach`, `sessions`, `kill` and `rename` subcommands from
+   at the end, in place of `ratatui::restore()`. Ask for the keyboard
+   enhancement with `Keyboard::IfSupported(flags)` and read
+   `session.keyboard_enhanced()` (Shift+Enter told from Enter) rather
+   than asking the terminal again.
+5. Pictures: `graphics::pick` (or `pick_protocol` for a tool's own
+   choices) once the screen is up, and `graphics::reprobe` in the
+   `poll_with` hook after every attach. A screen that follows another on
+   the same terminal (a picker) calls `session.request_repaint()` to get
+   that first probe from its own loop.
+6. Children: `session.run_child(&mut command)` for a program the TUI
+   hands the terminal to; `session.command(&mut command, group)` for one
+   the tool waits for itself; `session.child_env()` for one started on a
+   worker thread; `child::run_one` with a `child::Stopper` to run one to
+   its end and follow its log and progress bars. `Group::Own` puts a
+   runner's child in a process group of its own, so a stop reaches all it
+   started; `Group::OwnWhenHosted` does so only while hosted. A child the
+   tool polls itself goes in a `Stopper` too (`hold`, then `try_wait`,
+   `id`, `stop`), so a hangup reaches it.
+7. Work outside the screen: `session.off_screen(|| ..)` for work that
+   writes to the terminal as a plain program does (the screen handed over
+   while it runs, if up), and `session.stoppable(|| ..)` for work that
+   does not; a `kill` waits for either.
+8. Closing words: `session.leave(text)` for a run's summary, in place of
+   printing it; `session.hold_error` to keep an error that ends the
+   program on a detached screen until it is seen, after which the program
+   says it as usual (`main` returning it).
+9. The `attach`, `sessions`, `kill` and `rename` subcommands from
    `legume_tui::cli`, `cli::SessionArgs` flattened into each TUI
    subcommand, and `cli::session_help` at the end of its long help.
-8. `kill` is the quit path: when `session.stop_requested()` is true, stop
-   as the quit key does, wrapping up running work.
-9. `let _quiet = legume_tui::logs::quiet();` while the screen is up, so
-   no log line lands on it.
+10. `kill` is the quit path: when `session.stop_requested()` is true (or a
+   round is `Round::Stopped`), stop as the quit key does, wrapping up
+   running work; a save under way finishes (`Stopper::saving`,
+   `Stopper::quit`) and unsaved edits are dropped.
+11. Logging: `let _quiet = legume_tui::logs::quiet();` while the screen
+   is up, or the tool's stderr logger behind `logs::gate` with
+   `logs::hold()` (kept and written after) or `logs::quiet_stderr()`
+   (dropped there, while a pane of the tool's own still gets them).
+12. Tests: `testing::Private` and `testing::Term`, with `Setup` for the
+   terminal's size, the tool's working directory and its canned
+   `Replies`, and `Term::screen` for what it shows.
+
+## From 0.2
+
+- `Session::poll` and `poll_with` return a `Round` in place of
+  `Option<Event>`: `Round::Event(e)`, `Timeout`, `Repainted` (no more
+  flag set in the hook to tell a repaint from a timeout) or `Stopped`.
+  `round.event()` gives the `Option<Event>` back.
+- `Session::command(&mut cmd, group)` takes a `Group`; `Group::Shared` is
+  0.2's behaviour, and a runner's child (a tool's own `process_group(0)`)
+  takes `Group::Own`.
+- `Modes` and `cli::SessionHelp` may grow, so they are built in steps:
+  `Modes::new().mouse(Mouse::Buttons)`, `SessionHelp::new().resume_hint(None)`
+  in place of struct literals. `Modes::keyboard_enhancement` is a
+  `Keyboard`: `Off`, `On(flags)` (0.2's `Some(flags)`) or
+  `IfSupported(flags)`.
+- `Round::Stopped` comes once a screen; `session.stop_requested()` stays
+  true for a loop or a later screen to check.
+- `testing::Private::term` answers the terminal's queries by default (the
+  device attributes and the status report, `Replies::plain`), so a probe
+  ends at once where 0.2's terminal let it time out;
+  `Setup::new().replies(Replies::silent())` gives 0.2's silent terminal
+  back.
+- `help_keys()` gives `HelpKey { key, short, long }` in place of pairs
+  split on `:`.
+- `cli::SessionHelp::resume_hint` is an `Option` (None for a TUI that
+  always opens on something named), beside a new `lead`; `cli::about`
+  takes the `Tool` and what `kill` stops a session as (`cli::QUIT_KEY`,
+  or `"ctrl+c in it"`).
+- `graphics::Answer` has `keyboard_enhancement`; `Fallback` has
+  `ProbeThenEnv`.
+- A tool's own copies of these go: a process-wide session (`current`), a
+  plain session that passes no opt-out on (`Session::plain`), the child
+  runner (`child`), kitty's file or inline transport
+  (`graphics::kitty_transport`), a log gate that holds records
+  (`logs::gate`, `logs::hold`).
 
 ## How it works
 
@@ -128,6 +197,7 @@ return `false` to make hosting opt-in (`Options::detach` then asks for it).
 
 ```rust
 use legume_tui::graphics::{Fallback, Graphics, Repick};
+use legume_tui::{Keyboard, Round};
 const TOOL: legume_tui::Tool = legume_tui::Tool::new("tool");
 
 fn main() -> anyhow::Result<()> {
@@ -139,17 +209,19 @@ fn main() -> anyhow::Result<()> {
 let session = TOOL.session("view", &args.session.options(has_target))?;
 let _quiet = legume_tui::logs::quiet(); // no log lines over the screen
 let graphics: Graphics = args.graphics; // `--graphics`, a clap ValueEnum
-let mut terminal = session.terminal_with(legume_tui::Modes {
-    mouse: legume_tui::Mouse::Buttons,
-    ..Default::default()
-})?;
+let mut terminal = session.terminal_with(
+    legume_tui::Modes::new()
+        .mouse(legume_tui::Mouse::Buttons)
+        .keyboard_enhancement(Keyboard::IfSupported(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)),
+)?;
 // Pictures start in block characters; the first repaint asks the terminal.
 let mut picker = ratatui_image::picker::Picker::halfblocks();
-while !quit && !session.stop_requested() {
+while !quit {
     session.draw(&mut terminal, |f| app.draw(f))?; // nothing while detached
     session.status(&app.one_line_status()); // the same line is not written again
-    let event = session.poll_with(&mut terminal, app.wait(), || {
-        // After an attach, before the mouse is on again.
+    let round = session.poll_with(&mut terminal, app.wait(), || {
+        // After an attach, before the mouse is on again; the keyboard is
+        // asked in the same round trip.
         match legume_tui::graphics::reprobe(&session, &picker, graphics, Fallback::Probe) {
             Repick::Same => {}
             Repick::Resend => app.encode_images_again(),
@@ -157,22 +229,41 @@ while !quit && !session.stop_requested() {
         }
         Ok(())
     })?;
-    if let Some(event) = event {
-        app.handle(event);
+    match round {
+        Round::Event(event) => app.handle(event),
+        Round::Repainted => app.shift_enter = session.keyboard_enhanced(),
+        Round::Stopped => quit = true, // `kill`: the quit path
+        _ => {}
     }
 }
 session.restore();
+// Said after the screen, or, detached, by whoever looks next.
+session.leave(&app.summary());
 ```
 
 `poll` waits for the next event up to the time given (at least a second
 while detached). After an attach it repaints first: back into the
 alternate screen, cleared, the hook called (to ask the terminal anything,
 before mouse reports could land amid the answer), the session's modes on
-again; then it returns at once, for the screen to be drawn whole. A
-`kill` ends the wait at once. `Modes` (mouse off, buttons or full,
-keyboard enhancement, bracketed paste, focus events) are the session's:
-on with the screen and after every attach, off when it is handed back
-and on a panic.
+again; then it returns `Round::Repainted` at once, for the screen to be
+drawn whole. An event read as the attach came is kept for the next round.
+A `kill` ends the wait at once (`Round::Stopped`, said once a screen:
+later rounds wait as before, and `session.stop_requested()` stays true).
+`Modes` (mouse off,
+buttons or full, keyboard enhancement, bracketed paste, focus events) are
+the session's: on with the screen and after every attach, off when it is
+handed back and on a panic. `Keyboard::IfSupported` asks the attached
+terminal (`CSI ? u`, kitty's keyboard query) as the screen comes up and
+after every attach, in the graphics query's round trip when the hook
+makes one (outside tmux), and turns the enhancement on only where it is
+answered; `session.keyboard_enhanced()` says whether it is on.
+
+`Session::plain(&TOOL)` opens a session that is never hosted, for a
+screen the tool opens by itself: plain, or, inside a session
+(`legume_tui::in_session()`), following it so it repaints after every
+attach. Unlike `--no-detach`, it passes no opt-out on to the children it
+starts. `legume_tui::current()` gives the first session `Tool::session`
+opened in the process, to code far from where it was opened.
 
 In the launching process `Tool::session` does not return when hosting: it
 starts the host (this executable again, same arguments), relays the
@@ -200,7 +291,7 @@ Commands::Rename(r) => legume_tui::cli::rename(&TOOL, &r)?,
 
 and `#[command(flatten)] session: legume_tui::cli::SessionArgs` on each TUI
 subcommand for `--no-detach` and `--session NAME`. Their help comes with
-them: `cli::session_help(&TOOL, cli::SessionHelp { .. })` for the end of a
+them: `cli::session_help(&TOOL, cli::SessionHelp::new()..)` for the end of a
 TUI subcommand's long help, in the tool's words (what goes on while
 detached, who offers the sessions to return to, a sentence more), wrapped
 to 70 columns and never inside a `` `quoted command` ``; and
@@ -236,8 +327,9 @@ status.
 `kill` sends SIGTERM, which `session.stop_requested()` reports so the
 program stops through its own quit path; a second SIGTERM ends it. It is
 taken so while the screen is up (`session.terminal()` to
-`session.restore()`) and while the program waits for a child
-(`session.run_child()`); elsewhere (loading, say) SIGTERM ends it at once,
+`session.restore()`), while the program waits for a child
+(`session.run_child()`) and while work runs that a stop waits for
+(`session.stoppable()`); elsewhere (loading, say) SIGTERM ends it at once,
 as by default. A stop taken during the screen stays reported after
 `restore()`. `kill` waits for the program to end, saying so after 3 s
 and every 10 s, for up to a minute before it suggests `--force`; the host
@@ -248,27 +340,60 @@ in their own process groups may keep running. `sessions` removes sockets
 nobody listens on, asking every host at once.
 
 A help screen lists `legume_tui::help_keys()`: the detach and switch keys
-with what they do, none unless a session of the process offers them.
+(`HelpKey { key, short, long }`: `detach` in a word and in a phrase),
+none unless a session of the process offers them.
 
-`session.run_child(&mut command)` runs a program on this terminal and
-waits for it, at any point. It passes a `kill` on to the child as
+`session.leave(text)` keeps a program's closing words (a run's summary,
+the error it ended with) where they will be read. Hosted, they are
+written beside the socket, `<id>.leave`, and outlive the session: the
+terminal attached when the program ends says them after its screen; with
+none attached, the `kill` that ended it, the next `sessions`, `attach`
+or start of the tool says `<id> ended: <text>`, once, and the file goes.
+Plain, they are printed on stderr as the screen is restored.
+`session.hold_error(&mut terminal, error)` makes an error that ends the
+program the status (`stopped: ...`) and, on a screen nobody is attached
+to, keeps it drawn until a terminal attaches and a key is pressed, or a
+`kill` comes. It then returns, and the program says the error as it
+would anyway (`main` returning it): a terminal attached then hears that,
+and hosted with none attached it is left as by `leave`, to be said once
+by whoever looks next. Either way it is said once.
+
+`session.stoppable(|| work())` takes `kill` as a request to stop while
+`work` runs, before or after the screen (a write that must finish, say):
+the stop waits for it and stays asked after.
+
+`session.run_child(&mut command)` runs a program on this terminal, in
+the program's process group (it has the terminal), and waits for it, at
+any point. It passes a `kill` on to the child as
 SIGTERM, which a TUI child takes through its own stop path. With the
 screen up, the child is handed the terminal, which is taken back after
 and repainted whole; a stop that came meanwhile stays reported. Before
 the screen or after it, a stop that came ends the program once the child
-is gone, as `kill` does there. The wait blocks (a thread waits for the
+is gone, as `kill` does there, unless it runs inside `stoppable` or
+`off_screen`, whose work the stop then waits for. The wait blocks (a thread waits for the
 child) and wakes only when the child ends or a stop comes. A child the
 tool starts and waits for itself gets the same environment from
-`session.command(&mut command)`: the user's opt-out
+`session.command(&mut command, group)`: the user's opt-out
 (`LEGUME_TUI_NO_DETACH=1` when this one runs plain by `--no-detach` or
-that variable). `run_child` sets it too.
+that variable). `run_child` sets it too. `session.child_env()` gives the
+same as owned data (`Send`, `Clone`), for a child started on a worker
+thread (`ChildEnv::apply`). `Group::Shared` keeps the child in the
+program's group (it has the terminal, or should hear a ctrl+c typed while
+the terminal is cooked). With `Group::Own` it always runs in a process
+group of its own, which the program stops itself: a stop reaches all it
+started, and nothing meant for the program (the wake after an attach, a
+ctrl+c) does. `Group::OwnWhenHosted` does that only while hosted; plain,
+the child stays in the program's group, so a hangup of the user's
+terminal reaches it with the program. Own-group children do not hear the
+hangup the program gets (its host lost, or the user's terminal): the
+crate passes it on to those a `child::Stopper` holds, saves aside.
 
 `session.off_screen(|| work())` does the same for the program's own work
 that writes to the terminal as a plain program does: with the screen up,
 its modes off, raw mode left and the normal screen shown while the work
-runs, then the screen taken back and repainted whole. `kill` meanwhile
-asks the program to stop (`session.stop_requested()`), as while the
-screen is up.
+runs, then the screen taken back and repainted whole. Up or not, `kill`
+meanwhile asks the program to stop (`session.stop_requested()`) and waits
+for the work, as `stoppable` does.
 
 ## Features
 
@@ -305,12 +430,51 @@ screen is up.
   (ratatui-image's query leaves a reader thread behind that takes the next
   keys). A reply that comes after the timeout reaches the program as
   input.
+  `graphics::pick_protocol(&session, wanted, fallback)` takes a tool's own
+  choice of protocol (None for auto), so values of its own map onto it,
+  and asks the terminal for its answer even for block characters.
+  `Fallback::ProbeThenEnv` asks, and takes the environment's guess when
+  no answer comes. `graphics::reprobe_with` gives the answer beside the
+  repick. The query also asks for kitty's keyboard enhancement (outside
+  tmux), which the session keeps (`Answer::keyboard_enhancement`).
+  `graphics::kitty_transport(&session)` says how kitty's pictures reach
+  the attached terminal: inline over ssh (`SSH_CONNECTION`, `SSH_CLIENT`
+  or `SSH_TTY` in what it passed on), through a file otherwise.
 - `logs` (default): `logs::quiet()`, a guard that turns logging off while
   the screen is up and back on when dropped (a panic unwinding past it
-  drops it).
+  drops it). `logs::gate(logger)` puts the tool's stderr logger behind a
+  gate (`log::set_logger(gate)`, or a logger of the tool's own passing
+  records on to it beside a pane): `logs::hold()` keeps what goes through
+  it while a screen is up and writes it, in order, as the screen goes
+  (handed over or restored) and when the hold ends, the latest 10,000 and
+  a line saying how many older ones were dropped; `logs::quiet_stderr()`
+  drops it while the guard lives, the log level untouched, so the pane
+  still gets every record.
+- `child` (default, Unix): `child::run_one(command, &stopper, each)` runs
+  a child to its end, its stderr a pseudo-terminal so its progress bars
+  draw: each frame a `Said::Progress` (`pos`, `len`, what it counts, and
+  the `key=number` score in it), the rest `Said::Line`s of its log without
+  colours or the logger's prefix. A `child::Stopper` interrupts it, then
+  kills it, with the group it leads; `Stopper::hold` and `release` keep a
+  child the tool started itself (its pipes its own) where a stop reaches
+  it, and `Stopper::try_wait` and `id` let a loop poll it there (it is let
+  go once it has ended). `Stopper::saving()` marks a save:
+  `Stopper::quit` (the program's quit path) lets it finish, and a hangup
+  is not passed on to it. Its stderr and stdout are the program's and
+  close with it, so a save that must outlive a hangup writes what it has
+  first, logs to a file, or bears a failed write (Rust's `eprintln!`
+  panics on one).
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
-  private directory killed with it.
+  private directory killed with it. `Private::term_with(args, env, setup)`
+  takes a `Setup`: the terminal's size, the tool's working directory, and
+  the `Replies` the terminal gives to the program's queries (by default
+  only the device attributes and the status report, so a probe ends at
+  once; `Replies::plain().kitty().sixel().keyboard(flags).cell(w, h)
+  .background(r, g, b)` for more, `Replies::silent()` for none).
+  `Term::screen()` is what the terminal shows, modelled from the bytes
+  (`vt100`), `Term::wait_screen(needle)` waits for it, and
+  `Term::alternate()` says which screen it is on.
 
 ## Environment
 
@@ -328,17 +492,42 @@ screen is up.
 the mode decision, the socket directory and labels, the client's relay
 loop and label prompt (over a pty pair), the host driven over its socket
 with `sh` as the program (stalled clients, a program not reading,
-takeovers, watchers, lookup by label or id, SIGPIPE at its default), and
-an end-to-end run of `examples/demo.rs` through pseudo-terminals (launch,
-detach, attach and repaint, a lost client, a client stopped by a signal,
-nested launches, the resume picker, naming on detach, rename, a bare
-attach picking, the switch key in both encodings, other keys, kill, kill
-waking a screen that waits long for a key, kill passed on to a child run
-before the screen, a program that fails at once, one slow to start its
-screen, one that stops reading its input, a signal in the switch picker),
-through the `testing` harness.
-The graphics query is tested over a pty pair: a terminal that never
-answers leaves the next keys to the program's next read, and an answer
-is read to its end and no further. Graphics on real terminals are checked
-by hand. The plain path (no sessions) is built and tested on Unix with
+takeovers, watchers, lookup by label or id, SIGPIPE at its default), the
+log gate (records held and capped), the child runner (bars read off a
+pty, a stop and a kill reaching the group a child leads and what it
+started, a save let finish, a held child polled), the test terminal's
+canned replies (tmux passthroughs left unanswered), and an end-to-end run of `examples/demo.rs` through
+pseudo-terminals (launch, detach, attach and repaint, a lost client, a
+client stopped by a signal, nested launches, the resume picker, naming on
+detach, rename, a bare attach picking, the switch key in both encodings,
+other keys, kill, kill waking a screen that waits long for a key, kill
+passed on to a child run before the screen, a program that fails at once,
+one slow to start its screen, one that stops reading its input, a signal
+in the switch picker, what a program leaves said once by the attached
+terminal, `kill`, `sessions` or the next start, an error held on a
+detached screen until it is seen and an error said once whether seen
+then or later, plain or hosted, work a stop waits for, a child run inside
+such work, a lost host ending the fits its program held but not a save
+(which still writes what it has), and the probe reading a
+terminal's canned answers off the modelled screen), through the `testing`
+harness. `tests/child.rs` runs the child runner through the public API.
+The terminal queries are tested over a pty pair: a terminal that never
+answers leaves the next keys to the program's next read, an answer is
+read to its end and no further, and the keyboard's reply is told from
+the others. Graphics on real terminals are checked by hand. The plain path
+(no sessions) is built and tested on Unix with
 `RUSTFLAGS="--cfg legume_tui_plain"`.
+
+Before a release:
+
+```sh
+cargo fmt --check
+for f in "" --no-default-features --all-features; do
+  cargo clippy --all-targets $f -- -D warnings
+done
+RUSTFLAGS="--cfg legume_tui_plain" cargo clippy --all-targets --all-features \
+  --target-dir target/plain -- -D warnings
+cargo test
+RUSTFLAGS="--cfg legume_tui_plain" cargo test --all-features --target-dir target/plain
+cargo publish --dry-run
+```

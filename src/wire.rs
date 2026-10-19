@@ -254,9 +254,13 @@ impl Inbox {
 /// (image scaling and the graphics probe need both).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Size {
+    /// Rows of cells.
     pub rows: u16,
+    /// Columns of cells.
     pub cols: u16,
+    /// Width in pixels; 0 when the terminal does not say.
     pub width: u16,
+    /// Height in pixels; 0 when the terminal does not say.
     pub height: u16,
 }
 

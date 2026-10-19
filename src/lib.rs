@@ -20,19 +20,19 @@
 //! legume_tui::serve_if_host(); // first thing in main
 //! // ...
 //! let session = TOOL.session("view", &legume_tui::Options::default())?;
-//! let mut terminal = session.terminal_with(Modes {
-//!     mouse: Mouse::Buttons,
-//!     ..Modes::default()
-//! })?;
+//! let mut terminal = session.terminal_with(Modes::new().mouse(Mouse::Buttons))?;
 //! while !session.stop_requested() {
 //!     session.draw(&mut terminal, |f| { /* ... */ })?;
 //!     session.status("what the program is doing, in a line");
-//!     let event = session.poll_with(&mut terminal, std::time::Duration::from_secs(1), || {
+//!     let round = session.poll_with(&mut terminal, std::time::Duration::from_secs(1), || {
 //!         // after an attach: ask the terminal again, e.g. with
 //!         // legume_tui::graphics::reprobe
 //!         Ok(())
 //!     })?;
-//!     // handle the event, do the work ...
+//!     if let legume_tui::Round::Event(event) = round {
+//!         // handle the event ...
+//!     }
+//!     // do the work ...
 //! #   break;
 //! }
 //! session.restore();
@@ -49,8 +49,13 @@
 #[cfg_attr(not(sessions), allow(dead_code))]
 mod chord;
 mod mode;
+#[cfg(unix)]
+#[cfg_attr(not(any(sessions, feature = "child")), allow(dead_code))]
+mod pty;
 mod screen;
 
+#[cfg(sessions)]
+mod ask;
 #[cfg(sessions)]
 mod client;
 #[cfg(sessions)]
@@ -71,6 +76,8 @@ mod plain;
 #[cfg(not(sessions))]
 use plain::{dir, session_at, stop, Control};
 
+#[cfg(all(feature = "child", unix))]
+pub mod child;
 #[cfg(feature = "clap")]
 pub mod cli;
 #[cfg(feature = "graphics")]
@@ -83,11 +90,12 @@ pub mod testing;
 #[cfg(sessions)]
 pub use dir::{runtime_dir, Listed};
 pub use mode::{hosts_by_default, Bypass};
-pub use screen::{Modes, Mouse};
+pub use screen::{Keyboard, Modes, Mouse};
 #[cfg(sessions)]
 pub use wire::Size;
 
 use ratatui::crossterm::event::{self, Event};
+use std::ffi::OsString;
 use std::io;
 #[cfg(sessions)]
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -96,9 +104,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-#[cfg(sessions)]
-use std::sync::OnceLock;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 /// Set to `1` (anything but empty or `0`) to run every TUI plain.
@@ -150,6 +156,10 @@ pub const TERMINAL_VARS: &[&str] = &[
     "SSH_TTY",
 ];
 
+/// How long a terminal has to answer a query.
+#[cfg_attr(not(any(sessions, feature = "graphics")), allow(dead_code))]
+const ASK_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// How long a launching client waits for its host's socket.
 #[cfg(sessions)]
 const LAUNCH: Duration = Duration::from_secs(5);
@@ -192,27 +202,57 @@ pub fn switch_key() -> String {
 /// ([`Session::offers_keys`]).
 static KEYS_OFFERED: AtomicBool = AtomicBool::new(false);
 
+/// A key a help screen lists ([`help_keys`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HelpKey {
+    /// The key as [`detach_key`] spells it: `Ctrl+Alt+D`.
+    pub key: String,
+    /// What it does in a word: `detach`.
+    pub short: String,
+    /// What it does in a phrase that stands on its own.
+    pub long: String,
+}
+
 /// The detach and switch keys, each with what it does, for a help screen
 /// to list: none until a session of this process offers them
 /// ([`Session::offers_keys`]).
-pub fn help_keys() -> Vec<(String, String)> {
+pub fn help_keys() -> Vec<HelpKey> {
     if !KEYS_OFFERED.load(SeqCst) {
         return Vec::new();
     }
     vec![
-        (
-            detach_key(),
-            format!(
-                "detach: leave it running (named on the first detach); \
+        HelpKey {
+            key: detach_key(),
+            short: "detach".into(),
+            long: format!(
+                "detach, leaving it running (named on the first detach); \
                  `{} attach` (or starting it again) returns",
                 exe_name()
             ),
-        ),
-        (
-            switch_key(),
-            "switch: leave it running and pick another session".to_string(),
-        ),
+        },
+        HelpKey {
+            key: switch_key(),
+            short: "switch".into(),
+            long: "switch, leaving it running, to another session picked".into(),
+        },
     ]
+}
+
+/// The session [`Tool::session`] opened first in this process, for code
+/// far from where it was opened (a worker thread starting a child, say);
+/// None before. It is the same session: what one does, the other sees.
+pub fn current() -> Option<&'static Session> {
+    CURRENT.get()
+}
+
+/// The session [`current`] gives.
+static CURRENT: OnceLock<Session> = OnceLock::new();
+
+/// Whether this process runs in a session: the program a host started, or
+/// a program started inside it, at any depth ([`SESSION_VAR`] is set).
+pub fn in_session() -> bool {
+    std::env::var_os(SESSION_VAR).is_some_and(|v| !v.is_empty())
 }
 
 /// The running executable's file name, as a user types it.
@@ -263,10 +303,12 @@ impl Tool {
     #[cfg(not(sessions))]
     pub fn session(&self, screen: &str, opts: &Options) -> io::Result<Session> {
         let _ = screen;
-        Ok(match mode::mode(opts, &mode::Env::read()) {
-            mode::Mode::Plain(why @ (Bypass::Flag | Bypass::Env)) => Session::plain(why),
-            _ => Session::plain(Bypass::Unsupported),
-        })
+        let session = match mode::mode(opts, &mode::Env::read()) {
+            mode::Mode::Plain(why @ (Bypass::Flag | Bypass::Env)) => Session::bypassed(why),
+            _ => Session::bypassed(Bypass::Unsupported),
+        };
+        let _ = CURRENT.set(session.handle());
+        Ok(session)
     }
 
     /// Start the session of the tool's TUI `screen`, named
@@ -283,7 +325,11 @@ impl Tool {
     /// hosted [`Session`]. Elsewhere it returns a plain one and the TUI
     /// runs as before. Call it before any work the program would otherwise
     /// repeat. Where sessions are not supported, always a plain one
-    /// ([`Bypass::Unsupported`], unless the user opted out).
+    /// ([`Bypass::Unsupported`], unless the user opted out). The first one
+    /// a process opens is also [`current`].
+    ///
+    /// Before a launch, what the tool's ended sessions left
+    /// ([`Session::leave`]) is said, once.
     #[cfg(sessions)]
     pub fn session(&self, screen: &str, opts: &Options) -> io::Result<Session> {
         serve_if_host();
@@ -291,12 +337,15 @@ impl Tool {
             mode::Mode::Hosted => match control() {
                 Some(control) => Session::hosted(control),
                 // The channel was not ours after all (closed, or reused).
-                None => Session::nested(),
+                None => Session::nested(Bypass::Nested),
             },
-            mode::Mode::Plain(Bypass::Nested) => Session::nested(),
-            mode::Mode::Plain(why) => Session::plain(why),
+            mode::Mode::Plain(Bypass::Nested) => Session::nested(Bypass::Nested),
+            mode::Mode::Plain(why) => Session::bypassed(why),
             mode::Mode::Launch => {
                 let launched = dir::runtime_dir().and_then(|dir| {
+                    for (id, text) in dir::take_left(&dir, &self.prefix()) {
+                        eprintln!("{}", dir::ended(&id, &text));
+                    }
                     let live = dir::live(&dir, &self.prefix()).unwrap_or_default();
                     if let Some(code) = self.resume(&dir, opts, &live) {
                         std::process::exit(code);
@@ -309,14 +358,12 @@ impl Tool {
                     Err(e) if opts.name.is_some() => return Err(e),
                     Err(e) => {
                         eprintln!("legume-tui: running without a session ({e})");
-                        Session::plain(Bypass::NoHost)
+                        Session::bypassed(Bypass::NoHost)
                     }
                 }
             }
         };
-        if session.offers_keys() {
-            KEYS_OFFERED.store(true, SeqCst);
-        }
+        let _ = CURRENT.set(session.handle());
         Ok(session)
     }
 }
@@ -363,11 +410,14 @@ impl Tool {
         use std::os::fd::AsRawFd;
         // Bound here, so the name is ours and so is the host we reach on it.
         let base = format!("{}-{screen}", self.name);
-        let (name, listener) = dir::claim(dir, &self.prefix(), &base, opts.name.as_deref(), live)?;
+        let claimed = dir::claim(dir, &self.prefix(), &base, opts.name.as_deref(), live)?;
+        if let Some(text) = &claimed.left {
+            eprintln!("{}", dir::ended(&claimed.name, text));
+        }
         let mut claim = Claim {
             dir,
-            name,
-            listener: Some(listener),
+            name: claimed.name,
+            listener: Some(claimed.listener),
             up: false,
         };
         let name = claim.name.clone();
@@ -599,15 +649,46 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The alternate screen is a program screen's now: from
+/// [`Session::terminal`] to [`Session::restore`], but not while it is
+/// handed over ([`Session::run_child`], [`Session::off_screen`]). The
+/// terminal is the process's, whichever session has it.
+static SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Whether a screen of this process is shown now ([`SHOWN`]).
+#[cfg_attr(not(feature = "logs"), allow(dead_code))]
+pub(crate) fn screen_shown() -> bool {
+    SHOWN.load(SeqCst)
+}
+
+pub(crate) fn set_shown(shown: bool) {
+    SHOWN.store(shown, SeqCst);
+    // Log records held while it was up are written now.
+    #[cfg(feature = "logs")]
+    if !shown {
+        logs::replay();
+    }
+}
+
 /// A TUI's session: hosted (detachable) or plain. It stands where
 /// `ratatui::init` and `ratatui::restore` stood, and runs each round of
 /// the program's loop ([`Session::poll`], [`Session::draw`]).
+///
+/// The one [`Tool::session`] returns restores the terminal when dropped;
+/// [`current`] gives the same session to the rest of the process.
 pub struct Session {
+    inner: Arc<Inner>,
+    /// This one restores the terminal when dropped.
+    owner: bool,
+}
+
+/// What a session is, shared by the handles to it.
+struct Inner {
     /// The host's word on attaching: hosted, or nested in a host.
     control: Option<Arc<Control>>,
     bypass: Option<Bypass>,
-    /// A repaint is owed: the first in a plain session, and one after a
-    /// child had the terminal.
+    /// A repaint is owed: the first in a plain session, one after a child
+    /// had the terminal, and one asked for ([`Session::request_repaint`]).
     owed: AtomicBool,
     /// [`Session::terminal`] set the terminal up and it is not restored.
     on: AtomicBool,
@@ -615,17 +696,115 @@ pub struct Session {
     armed: Mutex<Option<stop::Armed>>,
     /// The modes the screen turns on.
     modes: Mutex<Modes>,
+    /// Whether the terminal has kitty's keyboard enhancement, and the
+    /// attach ([`attaches`]) that was asked at.
+    keyboard: Mutex<Option<(u64, bool)>>,
+    /// An event read in a round that ended in a repaint, for the next.
+    pending: Mutex<Option<Event>>,
+    /// A round of this screen said [`Round::Stopped`].
+    stop_said: AtomicBool,
     /// The session's directory and id, in a session's host or nested in
     /// one: where [`Session::status`] writes.
     at: Option<(PathBuf, String)>,
     /// What [`Session::status`] said last.
     said: Mutex<String>,
+    /// What a plain session leaves ([`Session::leave`]), said when its
+    /// screen goes.
+    left: Mutex<Option<String>>,
+}
+
+/// What one round's wait ([`Session::poll`]) ended with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Round {
+    /// An event came: a key, the mouse, a paste, a resize.
+    Event(Event),
+    /// Nothing came in the time given.
+    Timeout,
+    /// The screen was cleared for the terminal attached now (or taken
+    /// back from a child, or asked for by [`Session::request_repaint`]),
+    /// and the terminal asked again: draw it whole.
+    Repainted,
+    /// `kill` asked the program to stop ([`Session::stop_requested`]):
+    /// said once a screen, in the first round after it came. Later rounds
+    /// wait as before, and `stop_requested` stays true for the program,
+    /// or a screen after this one, to check.
+    Stopped,
+}
+
+impl Round {
+    /// The event, if one came.
+    pub fn event(self) -> Option<Event> {
+        match self {
+            Self::Event(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// Which process group a child of the program runs in
+/// ([`Session::command`], [`ChildEnv::apply`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Group {
+    /// The program's own, as [`Command`] starts it: for a child that has
+    /// the terminal ([`Session::run_child`]), or one that should hear what
+    /// the program hears (a ctrl+c typed while the terminal is cooked, a
+    /// hangup).
+    #[default]
+    Shared,
+    /// Always one of its own (Unix), which the program stops itself: for a
+    /// runner's child (`child::run_one`), so a stop reaches all it started
+    /// and nothing typed or sent to the program does. While a
+    /// `child::Stopper` holds it, a hangup of the program is passed on to
+    /// it, saves aside.
+    Own,
+    /// One of its own while the program is hosted, so no signal meant for
+    /// the program (a wake after an attach) reaches it; plain, the
+    /// program's own, so a hangup of the user's terminal reaches it with
+    /// the program. For a child the program waits for itself that is not
+    /// held by a `child::Stopper`.
+    OwnWhenHosted,
+}
+
+/// How a session starts its children: the environment it passes on, and
+/// whether it is hosted (for [`Group::OwnWhenHosted`]). Owned, for children
+/// started away from the session (on a worker thread).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChildEnv {
+    vars: Vec<(OsString, OsString)>,
+    hosted: bool,
+}
+
+impl ChildEnv {
+    /// The variables set on a child: the user's opt-out
+    /// ([`NO_DETACH_VAR`]) when the session runs plain by `--no-detach` or
+    /// by that variable. Inside a session, [`SESSION_VAR`] is passed on
+    /// already.
+    pub fn vars(&self) -> &[(OsString, OsString)] {
+        &self.vars
+    }
+
+    /// Set `cmd` up as the session starts its children, in `group`.
+    pub fn apply<'a>(&self, cmd: &'a mut Command, group: Group) -> &'a mut Command {
+        cmd.envs(self.vars.iter().map(|(k, v)| (k, v)));
+        #[cfg(unix)]
+        if group == Group::Own || (group == Group::OwnWhenHosted && self.hosted) {
+            std::os::unix::process::CommandExt::process_group(cmd, 0);
+        }
+        #[cfg(not(unix))]
+        let _ = group;
+        cmd
+    }
 }
 
 impl Session {
     fn new(control: Option<Arc<Control>>, bypass: Option<Bypass>) -> Self {
         let at = control.as_ref().and_then(|_| session_at());
-        Self {
+        if control.is_some() {
+            KEYS_OFFERED.store(true, SeqCst);
+        }
+        let inner = Inner {
             // Plain, the screen starts with one.
             owed: AtomicBool::new(control.is_none()),
             control,
@@ -633,8 +812,25 @@ impl Session {
             on: AtomicBool::new(false),
             armed: Mutex::new(None),
             modes: Mutex::new(Modes::default()),
+            keyboard: Mutex::new(None),
+            pending: Mutex::new(None),
+            stop_said: AtomicBool::new(false),
             at,
             said: Mutex::new(String::new()),
+            left: Mutex::new(None),
+        };
+        Self {
+            inner: Arc::new(inner),
+            owner: true,
+        }
+    }
+
+    /// Another handle to the session, which does not restore the terminal
+    /// when dropped.
+    fn handle(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            owner: false,
         }
     }
 
@@ -643,39 +839,117 @@ impl Session {
         Self::new(Some(control), None)
     }
 
-    fn plain(why: Bypass) -> Self {
+    fn bypassed(why: Bypass) -> Self {
         Self::new(None, Some(why))
     }
 
     /// Plain, inside another TUI's session: repaints after every attach
     /// as the hosted program does, when the host can be reached.
     #[cfg(sessions)]
-    fn nested() -> Self {
-        Self::new(watch(), Some(Bypass::Nested))
+    fn nested(why: Bypass) -> Self {
+        Self::new(watch(), Some(why))
+    }
+
+    /// A session that is never hosted, for a screen the tool opens by
+    /// itself: plain, as before ([`Bypass::Tool`]), or, inside a session
+    /// ([`in_session`]), following it as a TUI started there does
+    /// ([`Bypass::Nested`]). Unlike a plain run the user asked for, it
+    /// passes no opt-out on to the children it starts.
+    pub fn plain(tool: &Tool) -> Self {
+        let _ = tool;
+        #[cfg(sessions)]
+        if in_session() {
+            return Self::nested(Bypass::Nested);
+        }
+        Self::bypassed(Bypass::Tool)
     }
 
     /// The session's id; None when plain.
     pub fn name(&self) -> Option<String> {
         self.is_hosted()
-            .then(|| self.at.as_ref().map(|(_, id)| id.clone()))
+            .then(|| self.inner.at.as_ref().map(|(_, id)| id.clone()))
             .flatten()
     }
 
     /// Whether the program runs in a host.
     pub fn is_hosted(&self) -> bool {
-        self.bypass.is_none()
+        self.inner.bypass.is_none()
     }
 
     /// Say what the program is doing, in one short line, for the picker
     /// and `<tool> sessions` to show. Call it every round: the same line
     /// again is not written. It does nothing outside a session.
     pub fn status(&self, text: &str) {
-        let Some((dir, id)) = &self.at else { return };
-        let mut said = lock(&self.said);
+        let Some((dir, id)) = &self.inner.at else {
+            return;
+        };
+        let mut said = lock(&self.inner.said);
         if *said != text {
             let _ = dir::write_status(dir, id, text);
             *said = text.to_string();
         }
+    }
+
+    /// Leave `text` (a run's summary, the error it ended with) to be read
+    /// when the program has ended, in place of printing it: hosted, it is
+    /// kept beside the session's socket and said by the terminal attached
+    /// when the program ends, or else, once, by the next `<tool> attach`,
+    /// `sessions`, start of the tool, or the `kill` that ended it. Plain,
+    /// it is printed (on stderr) when the screen is restored, or now if it
+    /// is not up. A later call replaces it.
+    pub fn leave(&self, text: &str) {
+        match &self.inner.at {
+            Some((dir, id)) if self.is_hosted() => {
+                let _ = dir::write_leave(dir, id, text);
+            }
+            _ if self.screen_up() => *lock(&self.inner.left) = Some(text.to_string()),
+            _ => eprintln!("{}", text.trim_end()),
+        }
+    }
+
+    /// Hold `error`, which ends the program, where the user will see it,
+    /// then return for the program to end with it, saying it as it would
+    /// anyway (`main` returning it, say). It is the session's status
+    /// (`stopped: ...`). With the screen up and no terminal attached, it
+    /// is drawn there until a terminal attaches and a key is pressed, or
+    /// `kill` comes. Hosted, it is left ([`Session::leave`]) while no
+    /// terminal is attached, so a program that ends unseen has it said,
+    /// once, by whoever looks next; a terminal attached as it returns
+    /// hears the program say it, and nothing is left. Plain, nothing is
+    /// left: the program's own words are the ones seen.
+    pub fn hold_error(
+        &self,
+        terminal: &mut ratatui::DefaultTerminal,
+        error: impl std::fmt::Display,
+    ) -> io::Result<()> {
+        use ratatui::crossterm::event::KeyEventKind;
+        use ratatui::widgets::{Paragraph, Wrap};
+        let text = format!("{error:#}");
+        let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        self.status(&format!("stopped: {line}"));
+        // Left first, for a program that never gets to say it.
+        let hosted = self.is_hosted().then_some(self.inner.at.as_ref()).flatten();
+        if let Some((dir, id)) = hosted {
+            let _ = dir::write_leave(dir, id, &text);
+        }
+        if !self.attached() && self.screen_up() {
+            let shown = format!("{text}\n\nany key quits");
+            while !self.stop_requested() {
+                self.draw(terminal, |f| {
+                    let message = Paragraph::new(shown.as_str()).wrap(Wrap { trim: false });
+                    f.render_widget(message, f.area());
+                })?;
+                match self.poll(terminal, Duration::from_millis(250))? {
+                    Round::Event(Event::Key(k)) if k.kind == KeyEventKind::Press => break,
+                    _ => {}
+                }
+            }
+        }
+        // Seen as the program says it: not said again.
+        if let (Some((dir, id)), true) = (hosted, self.attached()) {
+            let _ = dir::take_leave(dir, id);
+        }
+        Ok(())
     }
 
     /// The value of environment variable `name` (one of
@@ -685,7 +959,11 @@ impl Session {
     /// without it is None. Before any attach, when plain, and for other
     /// names, this process's own environment.
     pub fn terminal_env(&self, name: &str) -> Option<String> {
-        let passed = self.at.as_ref().filter(|_| TERMINAL_VARS.contains(&name));
+        let passed = self
+            .inner
+            .at
+            .as_ref()
+            .filter(|_| TERMINAL_VARS.contains(&name));
         if let Some(vars) = passed.and_then(|(dir, id)| dir::read_terminal_env(dir, id)) {
             return vars.into_iter().find(|(k, _)| k == name).map(|(_, v)| v);
         }
@@ -694,26 +972,34 @@ impl Session {
 
     /// Why the session is plain; None when hosted.
     pub fn bypass(&self) -> Option<Bypass> {
-        self.bypass
+        self.inner.bypass
     }
 
     /// Whether the detach and switch keys work here ([`detach_key`],
     /// [`switch_key`], [`help_keys`]): hosted, or started inside a session
     /// whose host it can follow.
     pub fn offers_keys(&self) -> bool {
-        self.control.is_some()
+        self.inner.control.is_some()
     }
 
-    /// Set `cmd` up to run as this session does, for a program the tool
-    /// starts and waits for itself ([`Session::run_child`] does this): the
-    /// user's opt-out ([`NO_DETACH_VAR`]) when this session runs plain by
-    /// `--no-detach` or by that variable. Inside a session,
-    /// [`SESSION_VAR`] is passed on already.
-    pub fn command<'a>(&self, cmd: &'a mut Command) -> &'a mut Command {
-        if matches!(self.bypass, Some(Bypass::Flag | Bypass::Env)) {
-            cmd.env(NO_DETACH_VAR, "1");
+    /// How this session starts its children, as owned data for children
+    /// started away from it ([`ChildEnv::apply`]).
+    pub fn child_env(&self) -> ChildEnv {
+        let mut vars = Vec::new();
+        if matches!(self.inner.bypass, Some(Bypass::Flag | Bypass::Env)) {
+            vars.push((NO_DETACH_VAR.into(), "1".into()));
         }
-        cmd
+        ChildEnv {
+            vars,
+            hosted: self.is_hosted(),
+        }
+    }
+
+    /// Set `cmd` up to run as this session does, in `group`, for a program
+    /// the tool starts and waits for itself ([`Session::run_child`] does
+    /// this): [`ChildEnv::apply`] of [`Session::child_env`].
+    pub fn command<'a>(&self, cmd: &'a mut Command, group: Group) -> &'a mut Command {
+        self.child_env().apply(cmd, group)
     }
 
     /// The terminal, raw, in the alternate screen, with a panic hook that
@@ -725,15 +1011,21 @@ impl Session {
 
     /// [`Session::terminal`], with `modes` on: the session turns them on
     /// again after every attach and off when the terminal is handed back
-    /// or on a panic.
+    /// or on a panic. With [`Keyboard::IfSupported`] the terminal is asked
+    /// first.
     pub fn terminal_with(&self, modes: Modes) -> io::Result<ratatui::DefaultTerminal> {
-        *lock(&self.modes) = modes;
+        *lock(&self.inner.modes) = modes;
         let t = ratatui::try_init()?;
         screen::off_on_panic();
-        if !self.on.swap(true, SeqCst) && self.control.is_some() {
-            *lock(&self.armed) = stop::Armed::new();
+        if !self.inner.on.swap(true, SeqCst) {
+            // A new screen hears a stop that came before it once too.
+            self.inner.stop_said.store(false, SeqCst);
+            if self.inner.control.is_some() {
+                *lock(&self.inner.armed) = stop::Armed::new();
+            }
         }
-        screen::turn_on(modes)?;
+        screen::turn_on(modes, self.keyboard_for(modes))?;
+        set_shown(true);
         // Crossterm's event source made now, with its resize handler, so
         // a stop before the first poll wakes that poll.
         let _ = event::poll(Duration::ZERO);
@@ -742,42 +1034,114 @@ impl Session {
 
     /// Change the modes the screen has on.
     pub fn set_modes(&self, modes: Modes) -> io::Result<()> {
-        *lock(&self.modes) = modes;
-        if self.on.load(SeqCst) {
+        *lock(&self.inner.modes) = modes;
+        if self.inner.on.load(SeqCst) {
             screen::turn_off()?;
-            screen::turn_on(modes)?;
+            screen::turn_on(modes, self.keyboard_for(modes))?;
         }
         Ok(())
     }
 
+    /// Whether keys come with kitty's keyboard enhancement as the modes
+    /// ask: [`Keyboard::On`], or [`Keyboard::IfSupported`] where the
+    /// terminal attached now said it has it (asked as the screen came up
+    /// and again after every attach; false while detached).
+    pub fn keyboard_enhanced(&self) -> bool {
+        match lock(&self.inner.modes).keyboard_enhancement {
+            Keyboard::Off => false,
+            Keyboard::On(_) => true,
+            Keyboard::IfSupported(_) => self.attached() && self.keyboard_supported(false),
+        }
+    }
+
+    /// Whether `modes` get the keyboard's enhancement here, the terminal
+    /// asked if they depend on it and it was not asked since the last
+    /// attach.
+    fn keyboard_for(&self, modes: Modes) -> bool {
+        matches!(modes.keyboard_enhancement, Keyboard::IfSupported(_))
+            && self.keyboard_supported(true)
+    }
+
+    /// Whether the terminal attached now has kitty's keyboard enhancement,
+    /// as it said since the last attach; else asked when `may_ask` (a
+    /// terminal must be attached), else false.
+    fn keyboard_supported(&self, may_ask: bool) -> bool {
+        let now = attaches();
+        if let Some((at, supported)) = *lock(&self.inner.keyboard) {
+            if at == now {
+                return supported;
+            }
+        }
+        if !may_ask || !self.attached() {
+            return false;
+        }
+        // No answer in time is no enhancement: not asked again until the
+        // next attach.
+        #[cfg(sessions)]
+        {
+            let supported = ask::keyboard().unwrap_or(false);
+            self.heard_keyboard(supported);
+            supported
+        }
+        #[cfg(not(sessions))]
+        false
+    }
+
+    /// What the terminal attached now said of kitty's keyboard
+    /// enhancement, asked by itself or by another query (the graphics
+    /// one); none is asked where sessions are not supported.
+    #[cfg_attr(not(sessions), allow(dead_code))]
+    pub(crate) fn heard_keyboard(&self, supported: bool) {
+        *lock(&self.inner.keyboard) = Some((attaches(), supported));
+    }
+
     /// Hand the terminal back (as `ratatui::restore`), its modes off; also
-    /// done on drop. From here `kill` ends the program as by default, but
-    /// a stop that came before stays asked
-    /// ([`Session::stop_requested`]).
+    /// done when the session [`Tool::session`] returned is dropped. From
+    /// here `kill` ends the program as by default, but a stop that came
+    /// before stays asked ([`Session::stop_requested`]). What a plain
+    /// session left ([`Session::leave`]) is said now.
     pub fn restore(&self) {
-        if self.on.swap(false, SeqCst) {
+        if self.inner.on.swap(false, SeqCst) {
             let _ = screen::turn_off();
             ratatui::restore();
-            *lock(&self.armed) = None;
+            *lock(&self.inner.armed) = None;
+            set_shown(false);
+            if let Some(text) = lock(&self.inner.left).take() {
+                eprintln!("{}", text.trim_end());
+            }
         }
+    }
+
+    /// Whether the screen is up: from [`Session::terminal`] to
+    /// [`Session::restore`], handed over for a while or not.
+    pub fn screen_up(&self) -> bool {
+        self.inner.on.load(SeqCst)
     }
 
     /// Whether to repaint everything now and probe the terminal again:
     /// true once after each attach in a hosted session (or one started
-    /// inside it), on the first call in a plain one, and after a child had
-    /// the terminal ([`Session::run_child`]). Cached graphics (an image
-    /// picker and the protocols made with it) must be rebuilt, since the
-    /// terminal may not be the one they were made for. [`Session::poll`]
-    /// asks it.
+    /// inside it), on the first call in a plain one, after a child had the
+    /// terminal ([`Session::run_child`]), and once after
+    /// [`Session::request_repaint`]. Cached graphics (an image picker and
+    /// the protocols made with it) must be rebuilt, since the terminal may
+    /// not be the one they were made for. [`Session::poll`] asks it.
     pub fn take_repaint(&self) -> bool {
-        match &self.control {
+        match &self.inner.control {
             Some(c) => {
                 let asked = c.take_repaint();
                 // Owed, it waits for a terminal to be there.
-                asked | (c.attached() && self.owed.swap(false, SeqCst))
+                asked | (c.attached() && self.inner.owed.swap(false, SeqCst))
             }
-            None => self.owed.swap(false, SeqCst),
+            None => self.inner.owed.swap(false, SeqCst),
         }
+    }
+
+    /// Owe a repaint, as after an attach: the next [`Session::poll`]
+    /// clears the screen, asks the terminal again (its hook) and returns
+    /// [`Round::Repainted`]. For a screen that follows another on the same
+    /// terminal (a picker) and wants its own first probe.
+    pub fn request_repaint(&self) {
+        self.inner.owed.store(true, SeqCst);
     }
 
     /// Whether a terminal is there to draw on. While detached, skip
@@ -785,7 +1149,7 @@ impl Session {
     /// keep the program's own work going at a slow poll. Always true when
     /// plain, but for a TUI started inside a session.
     pub fn attached(&self) -> bool {
-        match &self.control {
+        match &self.inner.control {
             Some(c) => c.attached(),
             None => true,
         }
@@ -794,28 +1158,43 @@ impl Session {
     /// Whether `kill` asked the program to stop (it arrives as SIGTERM):
     /// stop as the quit key does, wrapping up running work. A second
     /// `kill` ends the program at once. Asked while the screen is up
-    /// ([`Session::terminal`] to [`Session::restore`]) and while a child
-    /// runs ([`Session::run_child`]); elsewhere `kill` ends the program at
-    /// once. Always false when plain, but for a TUI started inside a
-    /// session.
+    /// ([`Session::terminal`] to [`Session::restore`]), while a child runs
+    /// ([`Session::run_child`]) and while work runs that a stop waits for
+    /// ([`Session::stoppable`]); elsewhere `kill` ends the program at once.
+    /// Always false when plain, but for a TUI started inside a session.
     pub fn stop_requested(&self) -> bool {
-        self.control.is_some() && stop::heard()
+        self.inner.control.is_some() && stop::heard()
     }
 
-    /// Run `cmd` on this terminal ([`Session::command`] sets it up) and
-    /// wait for it, as [`std::process::Child::wait`] does, at any point of
-    /// the program. While it runs, `kill` reaches only this program, so a
-    /// stop is passed on to the child as SIGTERM, which a TUI takes
-    /// through its own stop path ([`Session::stop_requested`]). With the
-    /// screen up, the child (a TUI of its own) is handed the terminal and
-    /// it is taken back after, to be repainted whole; a stop that came
-    /// meanwhile stays asked. Before the screen is up, or after it, a stop
-    /// that came ends the program once the child is gone, as `kill` does
-    /// there.
+    /// Run `work`, the program's own, with `kill` taken as a request to
+    /// stop meanwhile ([`Session::stop_requested`]), as while the screen
+    /// is up, but without bringing the screen up: a stop waits for `work`
+    /// to end (`work` may ask, to end early). The stop stays asked after,
+    /// for the program to wind down; from there `kill` ends it at once
+    /// again, if nothing else takes it.
+    pub fn stoppable<T>(&self, work: impl FnOnce() -> T) -> T {
+        let armed = self.inner.control.as_ref().and_then(|_| stop::Armed::new());
+        let done = work();
+        drop(armed);
+        done
+    }
+
+    /// Run `cmd` on this terminal ([`Session::command`] sets it up, in the
+    /// program's process group: it has the terminal) and wait for it, as
+    /// [`std::process::Child::wait`] does, at any point of the program.
+    /// While it runs, `kill` reaches only this program, so a stop is
+    /// passed on to the child as SIGTERM, which a TUI takes through its
+    /// own stop path ([`Session::stop_requested`]). With the screen up,
+    /// the child (a TUI of its own) is handed the terminal and it is taken
+    /// back after, to be repainted whole; a stop that came meanwhile stays
+    /// asked. Before the screen is up, or after it, a stop that came ends
+    /// the program once the child is gone, as `kill` does there, unless
+    /// work a stop waits for runs it ([`Session::stoppable`],
+    /// [`Session::off_screen`]): then the stop stays asked too.
     pub fn run_child(&self, cmd: &mut Command) -> io::Result<ExitStatus> {
-        self.command(cmd);
+        self.command(cmd, Group::Shared);
         let screen = self.hand_off();
-        let armed = self.control.as_ref().and_then(|_| stop::Armed::new());
+        let armed = self.inner.control.as_ref().and_then(|_| stop::Armed::new());
         let heard = stop::heard();
         let waited = cmd
             .spawn()
@@ -824,8 +1203,10 @@ impl Session {
             self.take_back()?;
         }
         let came = armed.is_some() && !heard && stop::heard();
+        // Taken by more than this wait: the screen, or work around it.
+        let taken = armed.as_ref().is_some_and(stop::Armed::outer);
         drop(armed);
-        if came && !screen {
+        if came && !screen && !taken {
             stop::end_as_by_default();
         }
         waited
@@ -835,12 +1216,13 @@ impl Session {
     /// plain program does (a progress line, a message), off the screen:
     /// with the screen up, its modes are off, raw mode left and the normal
     /// screen shown while `f` runs, and the screen is taken back after, to
-    /// be repainted whole. `kill` meanwhile asks the program to stop as
-    /// while the screen is up ([`Session::stop_requested`], which `f` may
-    /// ask). Before the screen is up, or after it, `f` just runs.
+    /// be repainted whole. Up or not, `f` runs as in
+    /// [`Session::stoppable`]: `kill` meanwhile asks the program to stop
+    /// ([`Session::stop_requested`], which `f` may ask), and the stop
+    /// waits for `f` to end.
     pub fn off_screen<T>(&self, f: impl FnOnce() -> T) -> io::Result<T> {
         let screen = self.hand_off();
-        let done = f();
+        let done = self.stoppable(f);
         if screen {
             self.take_back()?;
         }
@@ -851,10 +1233,11 @@ impl Session {
     /// (modes off, cooked, the normal screen), the stop left armed;
     /// whether the screen was up.
     fn hand_off(&self) -> bool {
-        let screen = self.on.load(SeqCst);
+        let screen = self.inner.on.load(SeqCst);
         if screen {
             let _ = screen::turn_off();
             ratatui::restore();
+            set_shown(false);
         }
         screen
     }
@@ -865,7 +1248,8 @@ impl Session {
         use ratatui::crossterm::{execute, terminal};
         terminal::enable_raw_mode()?;
         execute!(io::stdout(), terminal::EnterAlternateScreen)?;
-        self.owed.store(true, SeqCst);
+        set_shown(true);
+        self.inner.owed.store(true, SeqCst);
         Ok(())
     }
 
@@ -892,7 +1276,8 @@ impl Session {
         let size = terminal.size()?;
         terminal.resize(ratatui::layout::Rect::new(0, 0, size.width, size.height))?;
         probe()?;
-        screen::turn_on(*lock(&self.modes))
+        let modes = *lock(&self.inner.modes);
+        screen::turn_on(modes, self.keyboard_for(modes))
     }
 
     /// One round's wait: [`Session::poll_with`], nothing asked of the
@@ -901,28 +1286,32 @@ impl Session {
         &self,
         terminal: &mut ratatui::DefaultTerminal,
         wanted: Duration,
-    ) -> io::Result<Option<Event>> {
+    ) -> io::Result<Round> {
         self.poll_with(terminal, wanted, || Ok(()))
     }
 
-    /// One round's wait: the next event, if one comes within `wanted`
-    /// (at least a second while detached). A repaint owed
-    /// ([`Session::take_repaint`]) is done first, `on_repaint` called in
-    /// it to ask the terminal again (before the modes are on: see
-    /// `graphics::reprobe`), and then it returns at once, for the
-    /// screen to be drawn whole. A `kill` ends the wait.
+    /// One round's wait for the next event, up to `wanted` (at least a
+    /// second while detached). A repaint owed ([`Session::take_repaint`])
+    /// is done first, `on_repaint` called in it to ask the terminal again
+    /// (before the modes are on: see `graphics::reprobe`), and the round
+    /// ends at once, [`Round::Repainted`], for the screen to be drawn
+    /// whole; an event read as an attach came is kept for the next round.
+    /// A `kill` ends the wait ([`Round::Stopped`], once a screen).
     pub fn poll_with(
         &self,
         terminal: &mut ratatui::DefaultTerminal,
         wanted: Duration,
         on_repaint: impl FnOnce() -> io::Result<()>,
-    ) -> io::Result<Option<Event>> {
+    ) -> io::Result<Round> {
+        if let Some(event) = lock(&self.inner.pending).take() {
+            return Ok(Round::Event(event));
+        }
         if self.take_repaint() {
             self.repaint_with(terminal, on_repaint)?;
-            return Ok(None);
+            return Ok(Round::Repainted);
         }
-        if self.stop_requested() {
-            return Ok(None);
+        if self.stop_news() {
+            return Ok(Round::Stopped);
         }
         let wait = if self.attached() {
             wanted
@@ -930,15 +1319,31 @@ impl Session {
             wanted.max(DETACHED_POLL)
         };
         if !event::poll(wait)? {
-            return Ok(None);
+            return Ok(if self.stop_news() {
+                Round::Stopped
+            } else {
+                Round::Timeout
+            });
         }
         let event = event::read()?;
         // An attach woke the wait: the screen repainted before the event
         // is taken and drawn.
         if self.take_repaint() {
             self.repaint_with(terminal, on_repaint)?;
+            *lock(&self.inner.pending) = Some(event);
+            return Ok(Round::Repainted);
         }
-        Ok(Some(event))
+        if self.stop_news() {
+            *lock(&self.inner.pending) = Some(event);
+            return Ok(Round::Stopped);
+        }
+        Ok(Round::Event(event))
+    }
+
+    /// Whether a stop came that no round of this screen has said yet; it
+    /// is said now.
+    fn stop_news(&self) -> bool {
+        self.stop_requested() && !self.inner.stop_said.swap(true, SeqCst)
     }
 
     /// Draw a frame, as `terminal.draw` does, while a terminal is there to
@@ -965,7 +1370,9 @@ fn session_at() -> Option<(PathBuf, String)> {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        self.restore();
+        if self.owner {
+            self.restore();
+        }
     }
 }
 

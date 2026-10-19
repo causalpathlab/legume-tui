@@ -1,17 +1,24 @@
 //! A harness for a tool's tests: its TUI driven end to end through
 //! pseudo-terminals standing in for the user's, with the sessions in a
-//! private directory of the test's own.
+//! private directory of the test's own. The terminal answers what the
+//! program asks of it as a test says ([`Replies`]), and keeps a model of
+//! what it shows ([`Term::screen`]).
 //!
 //! ```no_run
-//! use legume_tui::testing::Private;
+//! use legume_tui::testing::{Private, Replies, Setup};
 //! // In a tool's integration test: env!("CARGO_BIN_EXE_tool").
 //! let dir = Private::new("target/debug/tool");
 //! let mut t = dir.term(&["view"], &[]);
-//! t.wait_for("a line the screen draws");
+//! t.wait_screen("a line the screen draws");
 //! t.type_(b"\x1b\x04");
 //! t.answer(1, b"\r");
 //! assert_eq!(t.exit_code(), 0);
 //! dir.wait_listed("detached");
+//! // A terminal with kitty's pictures and keyboard, in a folder of its own.
+//! let setup = Setup::new()
+//!     .cwd("target")
+//!     .replies(Replies::plain().kitty().keyboard(0).cell(10, 20));
+//! let t = dir.term_with(&["view"], &[], setup);
 //! ```
 
 use crate::Size;
@@ -90,8 +97,17 @@ impl Private {
 
     /// The tool with `args` and `env` on a new terminal of `size`.
     pub fn term_sized(&self, args: &[&str], env: &[(&str, &str)], size: Size) -> Term {
-        let (master, slave) = crate::host::pty(size).expect("a pseudo-terminal");
+        self.term_with(args, env, Setup::new().size(size))
+    }
+
+    /// The tool with `args` and `env` on a new terminal set up as `setup`
+    /// says: its size, the tool's working directory, what it answers.
+    pub fn term_with(&self, args: &[&str], env: &[(&str, &str)], setup: Setup) -> Term {
+        let (master, slave) = crate::host::pty(setup.size).expect("a pseudo-terminal");
         let mut cmd = self.command();
+        if let Some(cwd) = &setup.cwd {
+            cmd.current_dir(cwd);
+        }
         cmd.args(args)
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
@@ -109,16 +125,29 @@ impl Private {
         }
         let child = cmd.spawn().expect("the tool started");
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let size = setup.size.or_default();
+        let screen = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, 0)));
         {
             let mut master = master.try_clone().unwrap();
             let seen = Arc::clone(&seen);
+            let screen = Arc::clone(&screen);
+            let replies = setup.replies;
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
+                // What is not yet known to be a query or not.
+                let mut unread = Vec::new();
                 while let Ok(n) = master.read(&mut buf) {
                     if n == 0 {
                         break;
                     }
                     seen.lock().unwrap().extend_from_slice(&buf[..n]);
+                    screen.lock().unwrap().process(&buf[..n]);
+                    unread.extend_from_slice(&buf[..n]);
+                    let (reply, read) = replies.to(&unread);
+                    unread.drain(..read);
+                    if !reply.is_empty() {
+                        let _ = master.write_all(&reply);
+                    }
                 }
             });
         }
@@ -126,6 +155,7 @@ impl Private {
             master,
             slave,
             seen,
+            screen,
             child,
             wait: self.wait,
         }
@@ -215,6 +245,233 @@ pub fn alive(pid: u32) -> bool {
         .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
 }
 
+/// How [`Private::term_with`] sets a terminal up.
+#[derive(Clone, Debug)]
+pub struct Setup {
+    size: Size,
+    cwd: Option<PathBuf>,
+    replies: Replies,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Self {
+            size: SIZE,
+            cwd: None,
+            replies: Replies::plain(),
+        }
+    }
+}
+
+impl Setup {
+    /// A terminal of [`SIZE`] that answers as [`Replies::plain`], the tool
+    /// started in the test's working directory.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn size(self, size: Size) -> Self {
+        Self { size, ..self }
+    }
+
+    /// Start the tool in `cwd`.
+    pub fn cwd(self, cwd: impl Into<PathBuf>) -> Self {
+        Self {
+            cwd: Some(cwd.into()),
+            ..self
+        }
+    }
+
+    pub fn replies(self, replies: Replies) -> Self {
+        Self { replies, ..self }
+    }
+}
+
+/// What the terminal answers when the program asks it (the graphics
+/// query, the keyboard check): the device attributes (`CSI c`), the
+/// status report (`CSI 5 n`), and, as set, kitty's graphics query, its
+/// keyboard query (`CSI ? u`), the cell size (`CSI 16 t`) and the
+/// background colour (OSC 11). Queries wrapped for tmux are not answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replies {
+    /// Whether it answers at all.
+    answers: bool,
+    kitty: bool,
+    sixel: bool,
+    keyboard: Option<u8>,
+    cell: Option<(u16, u16)>,
+    background: Option<(u8, u8, u8)>,
+}
+
+impl Default for Replies {
+    fn default() -> Self {
+        Self::plain()
+    }
+}
+
+impl Replies {
+    /// What every terminal answers, and no more: a query ends at once and
+    /// finds nothing.
+    pub fn plain() -> Self {
+        Self {
+            answers: true,
+            kitty: false,
+            sixel: false,
+            keyboard: None,
+            cell: None,
+            background: None,
+        }
+    }
+
+    /// Nothing: a query waits out its time.
+    pub fn silent() -> Self {
+        Self {
+            answers: false,
+            ..Self::plain()
+        }
+    }
+
+    /// Kitty's graphics protocol.
+    pub fn kitty(self) -> Self {
+        Self {
+            kitty: true,
+            ..self
+        }
+    }
+
+    /// Sixel, in the device attributes.
+    pub fn sixel(self) -> Self {
+        Self {
+            sixel: true,
+            ..self
+        }
+    }
+
+    /// Kitty's keyboard enhancement, with these flags on now.
+    pub fn keyboard(self, flags: u8) -> Self {
+        Self {
+            keyboard: Some(flags),
+            ..self
+        }
+    }
+
+    /// A cell of `width` by `height` pixels.
+    pub fn cell(self, width: u16, height: u16) -> Self {
+        Self {
+            cell: Some((width, height)),
+            ..self
+        }
+    }
+
+    /// The background colour.
+    pub fn background(self, red: u8, green: u8, blue: u8) -> Self {
+        Self {
+            background: Some((red, green, blue)),
+            ..self
+        }
+    }
+
+    /// The answers to the queries in `out`, what the program wrote, and
+    /// how much of it is read: a query not yet whole is left for more.
+    fn to(&self, out: &[u8]) -> (Vec<u8>, usize) {
+        let mut reply = Vec::new();
+        if !self.answers {
+            return (reply, out.len());
+        }
+        let mut at = 0;
+        while at < out.len() {
+            let rest = &out[at..];
+            if rest[0] != 0x1b {
+                at += 1;
+                continue;
+            }
+            match self.answer(rest) {
+                Asked::Query(len, answer) => {
+                    reply.extend_from_slice(answer.as_bytes());
+                    at += len;
+                }
+                Asked::Partial => break,
+                Asked::Not => at += 1,
+            }
+        }
+        (reply, at)
+    }
+
+    /// The answer to the query `rest` starts with, if it starts with one.
+    fn answer(&self, rest: &[u8]) -> Asked {
+        let fixed: [(&[u8], Option<String>); 5] = [
+            (b"\x1b[c", Some(self.attributes())),
+            (b"\x1b[5n", Some("\x1b[0n".into())),
+            (b"\x1b[?u", self.keyboard.map(|f| format!("\x1b[?{f}u"))),
+            (
+                b"\x1b[16t",
+                self.cell.map(|(w, h)| format!("\x1b[6;{h};{w}t")),
+            ),
+            (
+                b"\x1b]11;?\x07",
+                self.background.map(|(r, g, b)| {
+                    format!("\x1b]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x07")
+                }),
+            ),
+        ];
+        for (query, answer) in fixed {
+            if rest.starts_with(query) {
+                return Asked::Query(query.len(), answer.unwrap_or_default());
+            }
+            if query.starts_with(rest) {
+                return Asked::Partial;
+            }
+        }
+        // A passthrough (tmux's `\ePtmux;...\e\\`), the escapes in it
+        // doubled: skipped whole, nothing in it answered.
+        if let Some(body) = rest.strip_prefix(b"\x1bP") {
+            let mut i = 0;
+            while i < body.len() {
+                match (body[i], body.get(i + 1)) {
+                    (0x1b, Some(0x1b)) => i += 2,
+                    (0x1b, Some(b'\\')) => return Asked::Query(2 + i + 2, String::new()),
+                    (0x1b, None) => break,
+                    _ => i += 1,
+                }
+            }
+            return Asked::Partial;
+        }
+        // Kitty's graphics query: an image command that asks (`a=q`).
+        if rest.starts_with(b"\x1b_G") || b"\x1b_G".starts_with(rest) {
+            let Some(end) = rest.windows(2).position(|w| w == b"\x1b\\") else {
+                return Asked::Partial;
+            };
+            let command = String::from_utf8_lossy(&rest[..end]);
+            let asks = command.contains("a=q") && command.contains("i=31");
+            let answer = if asks && self.kitty {
+                "\x1b_Gi=31;OK\x1b\\".to_string()
+            } else {
+                String::new()
+            };
+            return Asked::Query(end + 2, answer);
+        }
+        Asked::Not
+    }
+
+    /// The device attributes: a VT220, with sixel (4) if it has it.
+    fn attributes(&self) -> String {
+        if self.sixel {
+            "\x1b[?62;4;22c".into()
+        } else {
+            "\x1b[?62;22c".into()
+        }
+    }
+}
+
+/// Whether what the program wrote starts with a query.
+enum Asked {
+    /// One this long, and its answer (empty: none).
+    Query(usize, String),
+    /// Maybe, once more of it comes.
+    Partial,
+    Not,
+}
+
 /// A user's terminal: a pty whose other end the tool runs on, and all it
 /// has written so far.
 pub struct Term {
@@ -222,6 +479,8 @@ pub struct Term {
     pub master: File,
     slave: OwnedFd,
     seen: Arc<Mutex<Vec<u8>>>,
+    /// What it shows, as a terminal would.
+    screen: Arc<Mutex<vt100::Parser>>,
     /// The tool, as started on it.
     pub child: Child,
     wait: Duration,
@@ -260,6 +519,36 @@ impl Term {
         let skip = text.chars().count().saturating_sub(600);
         let tail: String = text.chars().skip(skip).collect();
         panic!("never saw {needle:?} after {from}; the last of it: {tail:?}");
+    }
+
+    /// The screen as the terminal shows it now: its rows, the spaces at
+    /// their ends left out, a line each.
+    pub fn screen(&self) -> String {
+        let parser = self.screen.lock().unwrap();
+        let screen = parser.screen();
+        let (_, cols) = screen.size();
+        screen
+            .rows(0, cols)
+            .map(|row| row.trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Whether the terminal shows its alternate screen now.
+    pub fn alternate(&self) -> bool {
+        self.screen.lock().unwrap().screen().alternate_screen()
+    }
+
+    /// Wait until the screen shows `needle` ([`Term::screen`]).
+    pub fn wait_screen(&self, needle: &str) {
+        let start = Instant::now();
+        while start.elapsed() < self.wait {
+            if self.screen().contains(needle) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the screen never showed {needle:?}:\n{}", self.screen());
     }
 
     pub fn type_(&mut self, bytes: &[u8]) {
@@ -310,3 +599,7 @@ impl Term {
         t.local_modes.contains(rustix::termios::LocalModes::ICANON)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/testing.rs"]
+mod tests;

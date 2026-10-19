@@ -304,21 +304,9 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 
 /// A pseudo-terminal of `size`: our end, and the program's.
 pub(crate) fn pty(size: Size) -> io::Result<(File, OwnedFd)> {
-    use rustix::fs::{Mode, OFlags};
-    use rustix::io::{fcntl_setfd, FdFlags};
-    use rustix::pty::{grantpt, openpt, ptsname, unlockpt, OpenptFlags};
-    let ours = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
-    fcntl_setfd(&ours, FdFlags::CLOEXEC)?;
-    grantpt(&ours)?;
-    unlockpt(&ours)?;
-    let name = ptsname(&ours, Vec::new())?;
-    let theirs = rustix::fs::open(
-        name.as_c_str(),
-        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
+    let (ours, theirs) = crate::pty::open()?;
     size.or_default().apply(&theirs)?;
-    Ok((File::from(ours), theirs))
+    Ok((ours, theirs))
 }
 
 /// `command` as a listing shows it: the program's file name and its
