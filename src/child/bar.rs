@@ -10,15 +10,23 @@
 //! rate) changes no point.
 //!
 //! Whether a bar is on the child's screen is told by order: indicatif
-//! clears a bar to print a log line above it and draws it again at once,
-//! while a bar finished and cleared is not drawn again. So a log line hides
-//! the bar, and its next frame shows it.
+//! clears a bar to redraw it or to print a log line above it, and draws it
+//! again at once, while a bar finished and cleared is not drawn again. So
+//! a clear ([`Said::Cleared`]) or a log line hides the bar, and its next
+//! frame shows it. Where a read of the child's output ends can split a
+//! redraw, so a bar is taken off the screen ([`Bar::visible`]) only once
+//! it has stayed gone for a [`GRACE`].
 
 use super::{number, scored, Progress, Said};
+use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Scores kept in a bar's trend, at most drawn in its sparkline.
 pub const TREND: usize = 64;
+
+/// How long a bar stays visible once said gone: longer than a redraw
+/// split between reads, and than indicatif's redraw tick.
+pub const GRACE: Duration = Duration::from_millis(250);
 
 /// A child's progress bar, followed through what the child says.
 #[derive(Clone, Debug)]
@@ -27,35 +35,38 @@ pub struct Bar {
     pub now: Progress,
     /// One point per score it reported, the newest last.
     pub trend: Vec<f64>,
-    /// Whether it is on the child's screen: no log line since its last
-    /// frame.
+    /// Whether it is on the child's screen: no log line, and no clear
+    /// ([`Said::Cleared`]), since its last frame. [`Bar::visible`] waits a
+    /// [`GRACE`] before taking it off.
     pub shown: bool,
     /// The message, up to its score, the newest point came from.
     scored: String,
+    /// When it was first said gone since its last frame.
+    gone: Option<Instant>,
 }
 
 impl Bar {
     /// Follow `said`, a child's next word, into `bar`. A frame moves the
     /// bar, or starts a new one (none before, restarted, another length
     /// or name: its scores are not on the last one's scale), and a new
-    /// score is a new point. A log line hides the bar.
+    /// score is a new point. A log line or a clear hides the bar.
     pub fn track(bar: &mut Option<Bar>, said: &Said) {
         let p = match said {
             Said::Progress(p) => p,
-            Said::Line(_) => {
+            Said::Line(_) | Said::Cleared => {
                 if let Some(b) = bar {
                     b.shown = false;
+                    b.gone.get_or_insert_with(Instant::now);
                 }
                 return;
             }
         };
-        let same = |b: &Bar| {
-            p.pos >= b.now.pos && p.len == b.now.len && label(&p.what).eq(label(&b.now.what))
-        };
+        let same = |b: &Bar| p.pos >= b.now.pos && same_bar(p, &b.now);
         let b = match bar {
             Some(b) if same(b) => {
                 b.now.clone_from(p);
                 b.shown = true;
+                b.gone = None;
                 b
             }
             _ => bar.insert(Bar {
@@ -63,6 +74,7 @@ impl Bar {
                 trend: Vec::new(),
                 shown: true,
                 scored: String::new(),
+                gone: None,
             }),
         };
         if let Some((said, v)) = scored(&p.what).filter(|(said, _)| *said != b.scored) {
@@ -73,6 +85,20 @@ impl Bar {
             b.scored = said.to_string();
         }
     }
+
+    /// Whether to draw it, as a screen should: on the child's screen, or
+    /// gone for less than a [`GRACE`] (a redraw split between reads, about
+    /// to be whole). It changes with time alone, so a screen drawing from
+    /// it repaints within a [`GRACE`] of the bar's last word.
+    #[must_use]
+    pub fn visible(&self) -> bool {
+        self.gone.is_none_or(|t| t.elapsed() < GRACE)
+    }
+}
+
+/// Whether two frames are of one bar: one length, one name.
+pub(super) fn same_bar(a: &Progress, b: &Progress) -> bool {
+    a.len == b.len && label(&a.what).eq(label(&b.what))
 }
 
 /// A bar message's name: its words that carry no number, so a sweep's

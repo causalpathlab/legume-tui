@@ -1,7 +1,10 @@
 //! Children run where they can be stopped, their logs and bars followed.
 
 use super::*;
+use crate::child::Bar;
+use std::cell::RefCell;
 use std::os::unix::process::CommandExt;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -220,4 +223,202 @@ fn a_child_in_the_programs_group_is_stopped_alone() {
     stopper.kill();
     let status = stopper.release().unwrap().wait().unwrap();
     assert!(!status.success());
+}
+
+/// indicatif's frame `n` of a bar, padded as it pads to the line's width.
+fn frame(n: u32) -> String {
+    format!("[00:00:00] ####------ {n}/10 (0s) sweeps {n}: moves=4   ")
+}
+
+/// indicatif's clear of a bar drawn with a line under it: a redraw's start,
+/// or, with nothing after, a finish.
+const CLEAR: &str = "\u{1b}[1A\r\u{1b}[2K\u{1b}[1B\r\u{1b}[2K\u{1b}[1A";
+
+/// A child's output as it streams: one chunk a read (split where it is
+/// longer than the reader's buffer), and whether its bar shows, and is
+/// visible, when each next read starts, after the last chunk's words.
+struct Streamed {
+    chunks: std::collections::VecDeque<Vec<u8>>,
+    bar: Rc<RefCell<Option<Bar>>>,
+    shown: Vec<bool>,
+    visible: Vec<bool>,
+    started: bool,
+}
+
+impl Read for Streamed {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if std::mem::replace(&mut self.started, true) {
+            let bar = self.bar.borrow();
+            self.shown.push(bar.as_ref().is_some_and(|b| b.shown));
+            self.visible.push(bar.as_ref().is_some_and(Bar::visible));
+        }
+        let Some(mut chunk) = self.chunks.pop_front() else {
+            return Ok(0);
+        };
+        if chunk.len() > buf.len() {
+            self.chunks.push_front(chunk.split_off(buf.len()));
+        }
+        buf[..chunk.len()].copy_from_slice(&chunk);
+        Ok(chunk.len())
+    }
+}
+
+/// `chunks` streamed through [`follow`] into [`Bar::track`]: what was
+/// said, and after each chunk whether the bar shows and is visible.
+fn streamed(chunks: &[String]) -> (Vec<Said>, Vec<bool>, Vec<bool>) {
+    let bar = Rc::new(RefCell::new(None));
+    let mut log = Streamed {
+        chunks: chunks.iter().map(|c| c.as_bytes().to_vec()).collect(),
+        bar: Rc::clone(&bar),
+        shown: Vec::new(),
+        visible: Vec::new(),
+        started: false,
+    };
+    let mut said = Vec::new();
+    follow(Some(&mut log), |s| {
+        Bar::track(&mut bar.borrow_mut(), &s);
+        said.push(s);
+    });
+    (said, log.shown, log.visible)
+}
+
+/// The frames said.
+fn frames(said: &[Said]) -> Vec<&Progress> {
+    said.iter()
+        .filter_map(|s| match s {
+            Said::Progress(p) => Some(p),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_redraw_or_a_line_split_between_reads_keeps_the_bar_visible() {
+    // A read can end anywhere: between a redraw's erase and its frame, or
+    // in the middle of a line printed over the bar. Whatever is said for a
+    // moment, the bar stays visible.
+    let line = format!("{CLEAR}epoch 1 done\r\n{}", frame(3));
+    let cut = line.find("done").unwrap();
+    let chunks = [
+        frame(1),
+        CLEAR.to_string(),
+        frame(2),
+        line[..cut].to_string(),
+        line[cut..].to_string(),
+    ];
+    let (_, _, visible) = streamed(&chunks);
+    assert_eq!(visible, [false, true, true, true, true]);
+}
+
+#[test]
+fn a_bar_comes_back_only_as_itself() {
+    // A finished bar, cleared; another bar of the same length is drawn:
+    // the finished one does not flash back.
+    let other = "[00:00:00] #--------- 1/10 (0s) greedy 1: moves=7   ".to_string();
+    let chunks = [
+        frame(1),
+        format!("{CLEAR}{}", frame(2)),
+        CLEAR.to_string(),
+        other,
+    ];
+    let (said, ..) = streamed(&chunks);
+    let frames: Vec<u64> = frames(&said).iter().map(|p| p.pos).collect();
+    assert_eq!(
+        frames,
+        [1, 2, 1],
+        "the greedy bar's own frame, said at the end"
+    );
+}
+
+/// The kind of each word said.
+fn kinds(said: &[Said]) -> Vec<&'static str> {
+    said.iter()
+        .map(|s| match s {
+            Said::Progress(_) => "frame",
+            Said::Cleared => "cleared",
+            Said::Line(_) => "line",
+        })
+        .collect()
+}
+
+/// indicatif's one-line clear: back to the line's start, erase it.
+const CLEAR1: &str = "\r\u{1b}[2K";
+
+#[test]
+fn a_bar_on_the_child_s_screen_shows_while_it_streams() {
+    // A frame is said whole, when the next redraw begins; between redraws
+    // the bar is on screen, and each frame is said once.
+    let chunks = [
+        frame(1),
+        format!("{CLEAR}{}", frame(2)),
+        format!("{CLEAR}{}", frame(3)),
+    ];
+    let (said, shown, _) = streamed(&chunks);
+    assert_eq!(shown, [false, true, true]);
+    assert_eq!(kinds(&said), ["frame", "frame", "frame"]);
+}
+
+#[test]
+fn a_bar_finished_and_cleared_is_hidden_at_once() {
+    // Cleared, and the fit works on in silence: no line comes to hide it.
+    for clear in [CLEAR, CLEAR1] {
+        let chunks = [frame(1), format!("{clear}{}", frame(2)), clear.to_string()];
+        let (said, shown, _) = streamed(&chunks);
+        assert_eq!(shown, [false, true, false], "{clear:?}");
+        assert_eq!(kinds(&said), ["frame", "frame", "cleared"], "{clear:?}");
+    }
+}
+
+#[test]
+fn a_line_printed_over_a_bar_leaves_it_shown_once_redrawn() {
+    // indicatif clears the bar, prints the line, and draws the bar again.
+    let chunks = [
+        frame(1),
+        format!("{CLEAR}{}", frame(2)),
+        format!("{CLEAR}epoch 1 done\r\n{}", frame(3)),
+    ];
+    let (said, shown, _) = streamed(&chunks);
+    assert_eq!(shown, [false, true, true]);
+    assert!(said.contains(&Said::Line("epoch 1 done".into())));
+}
+
+#[test]
+fn terminal_control_that_erases_nothing_is_not_a_clear() {
+    // The cursor hidden, or a colour reset on its own: the bar stays.
+    let chunks = [
+        frame(1),
+        format!("{CLEAR}{}", frame(2)),
+        "\u{1b}[?25l\r\u{1b}[0m\r".to_string(),
+    ];
+    let (said, shown, _) = streamed(&chunks);
+    assert_eq!(shown, [false, true, true]);
+    assert!(!said.contains(&Said::Cleared));
+}
+
+#[test]
+fn a_frame_cut_between_reads_waits_for_the_rest() {
+    // Cut inside its count: not a frame of length 1, nothing said early.
+    let whole = frame(3);
+    let (head, tail) = whole.split_at(whole.find("/10").unwrap() + 2);
+    let chunks = [
+        frame(1),
+        format!("{CLEAR}{}", frame(2)),
+        format!("{CLEAR}{head}"),
+        format!("{tail}{CLEAR1}"),
+    ];
+    let (said, ..) = streamed(&chunks);
+    let lens: Vec<u64> = frames(&said).iter().map(|p| p.len).collect();
+    assert_eq!(lens, [10, 10, 10]);
+}
+
+#[test]
+fn a_bar_cleared_is_said_once_a_redraw_not_at_all_nor_a_blank_line() {
+    let log = format!("{}{CLEAR}{}{CLEAR}", frame(1), frame(2));
+    let mut seen = Vec::new();
+    follow(Some(log.as_bytes()), |s| seen.push(s));
+    assert_eq!(kinds(&seen), ["frame", "frame", "cleared"]);
+    // Log lines with no bar say no clear, and a blank line is nothing.
+    let mut blank = Vec::new();
+    follow(Some("a\r\n\nb\n".as_bytes()), |s| blank.push(s));
+    assert_eq!(blank, [Said::Line("a".into()), Said::Line("b".into())]);
 }

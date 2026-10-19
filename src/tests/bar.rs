@@ -156,3 +156,32 @@ fn a_gauge_keeps_to_its_room() {
     let huge = Progress::new(u64::MAX / 2, u64::MAX, "bytes");
     assert!(gauge(&huge, 80, &[], 200).starts_with(&"█".repeat(39)));
 }
+
+#[test]
+fn a_bar_gone_is_visible_until_its_grace_runs_out() {
+    // Gone for a moment (a read cut a redraw) is not gone: only a bar not
+    // drawn again for the grace leaves the screen.
+    let mut bar = None;
+    frame(&mut bar, 1, 10, "sweeps 1: moves=9");
+    say(&mut bar, Said::Cleared);
+    assert!(bar.as_ref().unwrap().visible());
+    frame(&mut bar, 2, 10, "sweeps 2: moves=4");
+    assert!(bar.as_ref().unwrap().visible());
+    say(&mut bar, Said::Line("level 1 done".into()));
+    let b = bar.as_mut().unwrap();
+    b.gone = b.gone.map(|t| t - 2 * GRACE);
+    assert!(!b.visible(), "gone past the grace");
+}
+
+#[test]
+fn a_bar_cleared_and_not_drawn_again_stays_hidden() {
+    // A redraw is a clear and the next frame; a bar finished and cleared
+    // is a clear with nothing after it, while its fit works on in silence.
+    let mut bar = None;
+    frame(&mut bar, 1, 10, "sweeps 1: moves=9");
+    say(&mut bar, Said::Cleared);
+    frame(&mut bar, 2, 10, "sweeps 2: moves=4");
+    assert!(bar.as_ref().unwrap().shown, "redrawn");
+    say(&mut bar, Said::Cleared);
+    assert!(!bar.as_ref().unwrap().shown, "cleared for good");
+}
