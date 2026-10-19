@@ -704,3 +704,60 @@ fn heat_size_of_senna_s_heatmap() {
     assert_eq!(h, 2 * 16 + 6 * 16 + 3 * 7 + 8);
     assert_eq!(heat_size(&heat, font, &s, 1000), (1000, h));
 }
+
+/// [`heat_size`] as searches one pixel at a time.
+fn heat_size_linear(h: &Heat, font: Font, s: &HeatStyle, min_w: usize) -> (usize, usize) {
+    let (rows, cols) = (h.rows.len(), h.cols.len());
+    let lh = font.line_height();
+    let g = HeatGeom::new(0, 0, h, font, s);
+    let wide = (g.x0 + cols * lh + g.key_w + lh)
+        .max(lh / 2 + g.title_w)
+        .max(min_w);
+    let w = (wide..=wide + lh)
+        .find(|&w| HeatGeom::new(w, 0, h, font, s).fits_across(w, cols))
+        .unwrap_or(wide + lh);
+    let cells = if s.key { rows.max(4) } else { rows } * lh;
+    let low = g.y0 + cells + lh / 4 + g.col_label;
+    let high = 3 * (g.y0 + cells + g.col_label + lh);
+    let h_px = (low..=high)
+        .find(|&hh| HeatGeom::new(0, hh, h, font, s).fits_down(hh, rows, s.key))
+        .unwrap_or(high);
+    (w, h_px)
+}
+
+#[test]
+fn heat_size_is_the_linear_search_s() {
+    let mut g = Lcg(31);
+    for case in 0..300 {
+        let r = RandomHeat::new(&mut g);
+        let min_w = [0, 100, 900][g.below(3)];
+        assert_eq!(
+            heat_size(&r.heat(), r.font(), &r.style, min_w),
+            heat_size_linear(&r.heat(), r.font(), &r.style, min_w),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn heat_size_of_many_rows_is_quick() {
+    let rows: Vec<String> = (0..1500).map(|i| format!("GENE{i}")).collect();
+    let cols: Vec<String> = (0..40).map(|j| format!("CT{j}")).collect();
+    let z = vec![0.5; rows.len() * cols.len()];
+    let heat = Heat {
+        title: "T",
+        rows: &rows,
+        cols: &cols,
+        col_swatch: None,
+        z: &z,
+        clip: CLIP,
+        bold_row: None,
+    };
+    let s = HeatStyle::for_theme(&Theme::PAPER);
+    let font = Font::for_cell_height(16.0, false);
+    let t = std::time::Instant::now();
+    let (_, h) = heat_size(&heat, font, &s, 0);
+    let took = t.elapsed();
+    assert!(took.as_millis() < 1000, "{took:?}");
+    assert!(h >= rows.len() * font.line_height(), "{h}");
+}

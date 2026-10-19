@@ -414,6 +414,67 @@ fn a_page_too_wide_to_count_is_refused() {
     }
 }
 
+#[test]
+fn fits_keeps_a_page_readers_open() {
+    assert_eq!(fits((2100, 2100), 300.0), Ok(()));
+    // Exactly MAX_PIXELS, and exactly 200 inches on a side, are kept.
+    assert_eq!(fits((10_000, 8_000), 1000.0), Ok(()));
+    assert_eq!(fits((60_000, 100), 300.0), Ok(()));
+}
+
+#[test]
+fn fits_refuses_an_empty_page() {
+    for px in [(0, 100), (100, 0), (0, 0)] {
+        let e = fits(px, 300.0).unwrap_err();
+        assert!(e.contains("empty"), "{px:?}: {e}");
+    }
+}
+
+#[test]
+fn fits_refuses_more_than_max_pixels() {
+    let e = fits((10_001, 8_000), 1000.0).unwrap_err();
+    assert!(e.contains("10001 × 8000 px is too large"), "{e}");
+    // A product past usize is too large, not a panic.
+    assert!(fits((usize::MAX, 2), 1e30).is_err());
+}
+
+#[test]
+fn fits_refuses_a_page_past_200_inches_on_a_side() {
+    for px in [(60_001, 100), (100, 60_001)] {
+        let e = fits(px, 300.0).unwrap_err();
+        assert!(e.contains("200 inches"), "{px:?}: {e}");
+    }
+    // Few pixels, but a page too large at so low a resolution.
+    assert!(fits((2_001, 10), 10.0).is_err());
+    assert!(fits((100, 100), 0.0).is_err());
+    assert!(fits((100, 100), f32::NAN).is_err());
+}
+
+#[test]
+fn a_page_size_is_checked_as_fits_checks_it() {
+    // 300 inches wide at 10 dpi: 3000 px, well under MAX_PIXELS, but no
+    // reader opens it.
+    let p = PageSize {
+        width_in: 300.0,
+        dpi: 10,
+    };
+    let e = p.check(1.0).unwrap_err();
+    assert_eq!(Err(e), fits(p.px(1.0), 10.0));
+    assert!(p.check_grid(2).is_err());
+    for &width_in in &PageSize::WIDTHS_IN {
+        for &dpi in &PageSize::DPIS {
+            let p = PageSize { width_in, dpi };
+            for aspect in [0.4, 1.0, 2.5] {
+                assert_eq!(
+                    p.check(aspect).map(|_| ()),
+                    fits(p.px(aspect), dpi as f32),
+                    "{p:?} at {aspect}"
+                );
+            }
+        }
+    }
+}
+
 #[cfg(feature = "clap")]
 #[test]
 fn pdf_args_are_sennas_flags_and_defaults() {
@@ -470,4 +531,26 @@ fn a_page_drawn_is_the_steps_by_hand() {
     assert_eq!(key(&page.text), key(&text));
     assert!(key(&page.text)[1].5);
     assert_eq!(page.text[0].line, 20.0);
+}
+
+#[test]
+fn a_page_is_drawn_in_the_fonts_of_its_cell() {
+    let dbg = |(a, b): (Font, Font)| format!("{a:?} {b:?}");
+    for cell_px in [11.0, 16.0, 20.0, 45.8, 183.3, 400.0] {
+        let (_, got) = Page::draw((8, 8), PAGE, cell_px, |_, r, b| (r, b));
+        assert_eq!(dbg(got), dbg(fonts(cell_px)), "{cell_px}");
+        assert_eq!(
+            dbg(fonts(cell_px)),
+            dbg((
+                Font::for_cell_height(cell_px, false),
+                Font::for_cell_height(cell_px, true)
+            ))
+        );
+    }
+    for &width_in in &PageSize::WIDTHS_IN {
+        for &dpi in &PageSize::DPIS {
+            let p = PageSize { width_in, dpi };
+            assert_eq!(dbg(p.fonts()), dbg(fonts(p.cell_px())), "{p:?}");
+        }
+    }
 }

@@ -3,7 +3,8 @@
 //! standard fonts every reader has), so labels stay sharp, selectable and
 //! editable. A [`Frame`] drawn with [`Frame::keep_text`] gives both halves
 //! of a [`Page`]. [`PageSize`] is a page's width and resolution, the sizes
-//! a save offers, and [`PdfArgs`] the flags that ask for one.
+//! a save offers, [`fits`] whether a page of so many pixels can be drawn
+//! and opened, and [`PdfArgs`] the flags that ask for one.
 //!
 //! Ported from senna: [`write_pdf`] and [`Page`] from `src/view/pdf.rs`
 //! (its maths unchanged), [`font`] from the same file, [`shape`],
@@ -36,7 +37,7 @@ pub struct Page {
 
 impl Page {
     /// A `w × h` page drawn by `f`: a blank frame in `bg` that keeps its
-    /// text, handed to `f` with the regular and bold fonts for `cell_px`;
+    /// text, handed to `f` with the [`fonts`] for `cell_px`;
     /// its pixels and text become the page, beside what `f` returned.
     pub fn draw<T>(
         (w, h): (usize, usize),
@@ -46,15 +47,22 @@ impl Page {
     ) -> (Self, T) {
         let mut frame = Frame::blank(w, h, bg);
         frame.keep_text();
-        let out = f(
-            &mut frame,
-            Font::for_cell_height(cell_px, false),
-            Font::for_cell_height(cell_px, true),
-        );
+        let (regular, bold) = fonts(cell_px);
+        let out = f(&mut frame, regular, bold);
         let img = frame.to_image();
         let text = frame.take_text();
         (Self { img, text }, out)
     }
+}
+
+/// The regular and bold fonts a page's text is drawn in, for lines
+/// `cell_px` pixels tall.
+#[must_use]
+pub fn fonts(cell_px: f32) -> (Font, Font) {
+    (
+        Font::for_cell_height(cell_px, false),
+        Font::for_cell_height(cell_px, true),
+    )
 }
 
 /// Pixels past which a picture is refused (its canvas is 12 bytes a pixel).
@@ -275,6 +283,32 @@ pub fn grid_page(
     }
 }
 
+/// The longest side a page may have, in inches: PDF readers open pages
+/// up to 14,400 units of 1/72 inch on a side.
+pub const MAX_INCHES: f32 = 200.0;
+
+/// Whether a `w × h` pixel page at `dpi` can be drawn and opened: not
+/// empty, at most [`MAX_PIXELS`], and at most [`MAX_INCHES`] on a side.
+///
+/// # Errors
+/// Why not, to show the user.
+pub fn fits((w, h): (usize, usize), dpi: f32) -> Result<(), String> {
+    if w == 0 || h == 0 {
+        return Err(format!("{w} × {h} px is empty; raise the width or dpi"));
+    }
+    if w.checked_mul(h).is_none_or(|n| n > MAX_PIXELS) {
+        return Err(format!("{w} × {h} px is too large; lower the width or dpi"));
+    }
+    let side = w.max(h) as f32 / dpi;
+    if !(dpi > 0.0 && side <= MAX_INCHES) {
+        return Err(format!(
+            "{w} × {h} px at {dpi} dpi is past {MAX_INCHES} inches on a side; \
+             lower the width or raise the dpi"
+        ));
+    }
+    Ok(())
+}
+
 /// A page's width in inches and the resolution of its raster: its height
 /// follows the picture's aspect.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -318,13 +352,19 @@ impl PageSize {
         self.dpi as f32 * 11.0 / 72.0
     }
 
+    /// The regular and bold [`fonts`] of [`PageSize::cell_px`].
+    #[must_use]
+    pub fn fonts(self) -> (Font, Font) {
+        fonts(self.cell_px())
+    }
+
     /// [`PageSize::px`], or why the page cannot be drawn: a width that is
-    /// not a positive number, a dpi of 0, or more than [`MAX_PIXELS`].
+    /// not a positive number, a dpi of 0, or a page [`fits`] refuses.
     ///
     /// # Errors
     /// The reason, to show the user.
     pub fn check(self, aspect: f32) -> Result<(usize, usize), String> {
-        self.fits(|p| p.px(aspect))
+        self.sized(|p| p.px(aspect))
     }
 
     /// [`PageSize::grid_px`], or why the page cannot be drawn, as
@@ -333,20 +373,15 @@ impl PageSize {
     /// # Errors
     /// The reason, to show the user.
     pub fn check_grid(self, n: usize) -> Result<(usize, usize), String> {
-        self.fits(|p| p.grid_px(n))
+        self.sized(|p| p.grid_px(n))
     }
 
-    fn fits(self, px: impl FnOnce(Self) -> (usize, usize)) -> Result<(usize, usize), String> {
+    fn sized(self, px: impl FnOnce(Self) -> (usize, usize)) -> Result<(usize, usize), String> {
         if !(self.width_in.is_finite() && self.width_in > 0.0 && self.dpi > 0) {
             return Err("the width and dpi must be positive".into());
         }
         let (w, h) = px(self);
-        if w == 0 || h == 0 {
-            return Err(format!("{w} × {h} px is empty; raise the width or dpi"));
-        }
-        if w.checked_mul(h).is_none_or(|n| n > MAX_PIXELS) {
-            return Err(format!("{w} × {h} px is too large; lower the width or dpi"));
-        }
+        fits((w, h), self.dpi as f32)?;
         Ok((w, h))
     }
 }

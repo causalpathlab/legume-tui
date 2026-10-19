@@ -84,6 +84,20 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.10
+
+- `figure_size` and `heat_size` find their size by halving steps rather
+  than one pixel at a time; a figure with a long key is sized at once,
+  and the sizes are unchanged.
+- `chart::structure::figure_size_checked` is `None` where no height
+  shows the figure at that width, and `try_figure` draws it or says why
+  it cannot, without a note on the page.
+- `export::fits` says whether a page of so many pixels at a resolution
+  can be drawn and opened (at most `MAX_PIXELS`, and 200 inches on a
+  side); `PageSize::check` refuses what it refuses.
+- `export::fonts` (and `PageSize::fonts`) are the regular and bold
+  fonts `Page::draw` hands its drawing.
+
 ## 0.3.9
 
 - Charts say how large a page they need: `chart::heatmap::heat_size`

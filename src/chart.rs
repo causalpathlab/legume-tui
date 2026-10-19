@@ -25,9 +25,40 @@ pub fn note(frame: &mut Frame, s: &str, font: Font, theme: &Theme) {
     text::draw(frame, font, s, lh, lh, to_linear(theme.text), bg);
 }
 
-/// The least of `from..=to` that is `ok`, or `to`.
+/// The least of `from..=to` that is `ok`, or `to`, for an `ok` that,
+/// once true, stays true as the size grows: steps doubling up from
+/// `from` until one is `ok`, then halves the last step.
 fn least(from: usize, to: usize, ok: impl Fn(usize) -> bool) -> usize {
-    (from..=to).find(|&v| ok(v)).unwrap_or(to)
+    if from > to {
+        return to;
+    }
+    if ok(from) {
+        return from;
+    }
+    // `no` is not ok; the answer, if any, is in `no + 1..=to`.
+    let (mut no, mut step) = (from, 1usize);
+    let yes = loop {
+        let at = no.saturating_add(step).min(to);
+        if ok(at) {
+            break at;
+        }
+        if at == to {
+            return to;
+        }
+        no = at;
+        step = step.saturating_mul(2);
+    };
+    // Not ok at `no`, ok at `yes`.
+    let (mut no, mut yes) = (no, yes);
+    while yes - no > 1 {
+        let mid = no + (yes - no) / 2;
+        if ok(mid) {
+            yes = mid;
+        } else {
+            no = mid;
+        }
+    }
+    yes
 }
 
 /// How [`step_top`] steps.
