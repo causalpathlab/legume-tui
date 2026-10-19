@@ -42,6 +42,21 @@ fn table_encoder_matches_the_formula_within_one_step() {
 }
 
 #[test]
+fn senna_s_encoder_keeps_its_bytes() {
+    // senna's table truncates into 4096 steps: a few dark bytes come back
+    // one lower, and the middle of the range one below the formula.
+    assert_eq!(encode_senna(linear(3)), 2);
+    assert_eq!(encode_senna(linear(17)), 16);
+    assert_eq!(encode_senna(linear(18)), 18);
+    assert_eq!(encode_senna(0.5), 187);
+    assert_eq!(encode(0.5), 188);
+    assert_eq!(encode_senna(0.000_13), 0);
+    assert_eq!(encode_senna(-1.0), 0);
+    assert_eq!(encode_senna(2.0), 255);
+    assert_eq!(to_srgb_senna([0.5, 1.0, 0.0]), [187, 255, 0]);
+}
+
+#[test]
 fn palette_colours_are_distinct() {
     distinct(&Categorical::PINTO_DARK.srgb_all(60));
 }

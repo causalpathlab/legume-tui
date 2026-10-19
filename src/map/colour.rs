@@ -7,7 +7,8 @@
 //! keeps on disk in sRGB survive the trip.
 //!
 //! Ported from senna (`src/view/color.rs`: OKLCH, OKLab, the categorical
-//! palette, label ink, the activity ramp) and pinto (`src/view/color.rs`:
+//! palette, label ink, the activity ramp, its `Encoder` table as
+//! [`encode_senna`]) and pinto (`src/view/color.rs`:
 //! the decode and encode tables, its palettes, [`Ramp`], [`viridis`],
 //! [`magma`], [`diverging`]). The maths is theirs, operation for
 //! operation, so each tool draws the colours it drew before.
@@ -75,6 +76,29 @@ pub fn encode(c: f32) -> u8 {
 #[must_use]
 pub fn to_srgb(c: Lin) -> Srgb {
     c.map(encode)
+}
+
+/// Entries in senna's encoder table.
+const SENNA_STEPS: usize = 4096;
+
+/// Linear light → sRGB byte through senna's table: 4096 entries from 0 to
+/// 1 inclusive, read by truncating. A few dark bytes and some values
+/// between them come back one lower than [`encode`] gives, so senna keeps
+/// the pixels it drew before.
+#[must_use]
+pub fn encode_senna(c: f32) -> u8 {
+    static TABLE: LazyLock<Vec<u8>> = LazyLock::new(|| {
+        (0..SENNA_STEPS)
+            .map(|i| encode_exact(i as f32 / (SENNA_STEPS - 1) as f32))
+            .collect()
+    });
+    TABLE[(c.clamp(0., 1.) * (SENNA_STEPS - 1) as f32) as usize]
+}
+
+/// A linear colour in sRGB, by senna's table.
+#[must_use]
+pub fn to_srgb_senna(c: Lin) -> Srgb {
+    c.map(encode_senna)
 }
 
 /// Relative luminance of an sRGB colour: 0 for black, 1 for white.
