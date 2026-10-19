@@ -203,3 +203,22 @@ fn a_file_is_recorded_with_its_size_and_sha256() {
     );
     assert!(FileRecord::of(&tmp.path().join("gone")).is_err());
 }
+
+#[test]
+fn a_set_whose_second_file_cannot_move_is_put_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let log_dir = dir.join(".lupin-view");
+    let (pdf, json) = (dir.join("run.pdf"), dir.join("run.json"));
+    std::fs::write(&pdf, "%PDF-1.4 fake").unwrap();
+    std::fs::write(&json, "{}").unwrap();
+    let mut g = open(&log_dir);
+    g.add(&[&pdf, &json], "order", None, trace("order", &dir))
+        .unwrap();
+    // A name the PDF fits under and the table, one byte longer, does not.
+    let long = dir.join("x".repeat(255 - ".pdf".len()));
+    assert!(g.relocate(&pdf, &long).is_err());
+    assert!(pdf.is_file() && json.is_file(), "the moved PDF is put back");
+    assert!(!long.with_extension("pdf").exists());
+    assert_eq!(open(&log_dir).entries()[0].path, pdf);
+}
