@@ -76,18 +76,28 @@ mod plain;
 #[cfg(not(sessions))]
 use plain::{dir, session_at, stop, Control};
 
+#[cfg(feature = "chart")]
+pub mod chart;
 #[cfg(all(feature = "child", unix))]
 pub mod child;
-#[cfg(feature = "map")]
+#[cfg(feature = "style")]
 pub mod chrome;
 #[cfg(feature = "clap")]
 pub mod cli;
+#[cfg(feature = "export")]
+pub mod export;
+#[cfg(feature = "gallery")]
+pub mod gallery;
 #[cfg(feature = "graphics")]
 pub mod graphics;
 #[cfg(feature = "logs")]
 pub mod logs;
-#[cfg(feature = "map")]
+#[cfg(any(feature = "save", feature = "gallery"))]
+pub mod look;
+#[cfg(feature = "style")]
 pub mod map;
+#[cfg(feature = "save")]
+pub mod save;
 #[cfg(all(feature = "testing", sessions))]
 pub mod testing;
 

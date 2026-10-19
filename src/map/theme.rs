@@ -37,8 +37,8 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// senna's page: a warm light grey, near-black text, muted points a
-    /// step darker than the page.
+    /// A warm light grey page, near-black text, muted points a step darker
+    /// than the page.
     pub const PAPER: Theme = Theme {
         background: [246, 245, 242],
         muted: [200, 199, 196],
@@ -51,7 +51,7 @@ impl Theme {
         palette: Categorical::SENNA,
         ink_lightness: 0.42,
     };
-    /// pinto's light map.
+    /// A light map: a cool light grey page and a darker palette.
     pub const LIGHT: Theme = Theme {
         background: [238, 238, 236],
         muted: [212, 212, 216],
@@ -64,7 +64,7 @@ impl Theme {
         palette: Categorical::PINTO_LIGHT,
         ink_lightness: 0.42,
     };
-    /// pinto's dark map.
+    /// A dark map: a near-black page and a lighter palette.
     pub const DARK: Theme = Theme {
         background: [17, 17, 20],
         muted: [40, 40, 46],
@@ -95,7 +95,8 @@ impl Theme {
         luminance(self.background) <= 0.18
     }
 
-    /// The other one of pinto's two, for the theme key.
+    /// The other one of [`Theme::LIGHT`] and [`Theme::DARK`], for the theme
+    /// key.
     #[must_use]
     pub fn other(&self) -> Theme {
         if self.is_dark() {

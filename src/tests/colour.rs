@@ -203,3 +203,19 @@ fn luminance_runs_from_black_to_white() {
     assert!((luminance([255; 3]) - 1.0).abs() < 1e-6);
     assert!(luminance([0, 255, 0]) > luminance([255, 0, 0]));
 }
+
+#[test]
+fn diverging_lin_round_trips_to_pinto_diverging() {
+    // senna's OKLCH in linear light, for charts blended in a frame: within a
+    // byte of pinto's own, and the colour for 0 where `t` is no number.
+    for i in -40..=40 {
+        let t = i as f32 / 20.0;
+        let (a, b) = (to_srgb(diverging_lin(t)), diverging(t));
+        for k in 0..3 {
+            assert!(a[k].abs_diff(b[k]) <= 1, "{t}: {a:?} {b:?}");
+        }
+    }
+    assert_eq!(diverging_lin(f32::NAN), diverging_lin(0.0));
+    assert_eq!(diverging_lin(f32::INFINITY), diverging_lin(0.0));
+    assert_eq!(diverging_lin(3.0), diverging_lin(1.0));
+}

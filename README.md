@@ -564,6 +564,9 @@ Other wording may change.
   close with it, so a save that must outlive a hangup writes what it has
   first, logs to a file, or bears a failed write (Rust's `eprintln!`
   panics on one).
+- `style`: `map::colour`, `map::theme`, `map::viewport` and `chrome`
+  alone, for a tool that takes the styles without the fonts and images
+  `map` draws with.
 - `map`: what the map viewers share. `map::colour`: linear light and
   sRGB by table (every byte reads back as it was), OKLCH and OKLab, label
   ink, `Categorical` palettes (`SENNA`, `PINTO_LIGHT`, `PINTO_DARK`, each
@@ -575,8 +578,100 @@ Other wording may change.
   pixels per data unit, y up or down the screen (`YAxis`); `zoom_at`
   (a factor above one zooms in) and `pan_px` stay within `Limits` (a
   scale range, and `keep_inside` to stop panning past the data).
+  `map::raster::Frame`: a page in linear light (`Frame::blank` in a page
+  colour, or `Frame::from_srgba` over a picture in bytes, which keeps
+  them), with `stamp`ed `Shape`s, `ring` and `edge`, and `keep_text` for
+  a vector page. `map::points::Job` draws `PointLayer`s progressively, in
+  chunks of doubling size, in the order `ranked` or `by_level` gives;
+  `auto_radius`, `visible_count` and `group_medians` with it.
+  `map::text`: noto bitmap `Font`s, `draw`, `draw_aligned`,
+  `draw_vertical` and `TextRun`s, and `draw_tiny`, a 5×7 scale-bar font.
+  `map::labels::place` sets labels centred on their anchors, dropping
+  overlaps; one moved by `map::offsets::Offsets` (in line heights) goes
+  first, stays inside the frame and is joined to its anchor past half a
+  line, and `Hits` finds the label under a click. `OffsetBook` keeps
+  offsets per layout, by label name, in one JSON file.
+  `map::legend`: `draw_legend` (with `+k more` past a row limit) and
+  `draw_ramp_key`. `map::pointer::Pointer` turns terminal mouse events
+  over a `MapArea` into `MapAction`s in frame pixels: a drag pans (and
+  goes on past the map's edge; any release ends it), the wheel zooms at
+  the pointer, a press released in place clicks (adding, by
+  `PointerOpts`, with the right button or held modifiers), motion hovers,
+  and a press on a label drags the label (`MoveLabel`). `LabelEdit` moves
+  labels from the keyboard, entered with `E`: Tab and BackTab pick a
+  label, the arrows nudge it half a line (Shift: two), Backspace puts it
+  back and Esc leaves. `nav_key` reads the zoom, pan and fit keys.
   `chrome::Chrome`: page, hint and menu styles from a theme, or the
   terminal's own with none, bordered popups, toasts and scrolled lists.
+- `map-display`: `map` and `graphics`, for a map on the terminal:
+  `map::display::cell` (frame pixels per cell), `stroke_floor` and
+  `fit_protocol`, the frame fitted to an area through ratatui-image.
+- `export`: a map, a chart or a grid of them as a PDF page.
+  `export::write_pdf(&pages, dpi, path)` (and `pdf_bytes`) writes each
+  `Page` as one raster image with its `TextRun`s set over it in Helvetica
+  (WinAnsi Latin-1, AFM widths, `export::font`), centred or turned as the
+  runs say, each in its own ink over a halo of its page colour.
+  `export::grid_page` tiles ready frames, each titled at its bottom left,
+  in the `shape` that keeps tiles largest. `PageSize` is a width in
+  inches and a dpi (`WIDTHS_IN`, `DPIS` offered), its pixels for an
+  aspect, the cell height text is sized for, and `check` against
+  `MAX_PIXELS`. With `clap`, `PdfArgs` adds `--pdf`, `--width` (7 in)
+  and `--dpi` (300).
+- `map-kitty`: pinto's own ways of putting a map on screen.
+  `map::kitty::Kitty::new(transport).through_tmux(on).named(tool)` shows a
+  `Frame` with kitty graphics (`show`, or `show_rgba` for bytes), two
+  images in turn so the map never flashes empty, its pixels through a
+  temporary file (`tty-graphics-protocol-{tool}-{pid}-{slot}.rgba`) or
+  inline, zlib-compressed in 4 KB chunks; `clear` takes them off the
+  screen and `remove_files` removes files kitty never read.
+  `map::kitty::cellart::Cells::fit` fits a frame to coloured block
+  characters (`Glyphs::{HalfBlocks, Quadrants, Symbols}`), drawn as a
+  ratatui widget. `map::kitty::MapGraphics` is the `--graphics` choice
+  among them and ratatui-image's protocols, with the protocol to ask for
+  (`protocol`), the glyphs it names (`glyphs`), and the crate's
+  `graphics::Graphics` where there is one.
+- `chart` (with `map`): charts drawn into a map's `Frame`.
+  `chart::structure::Layout::build` puts rows of mixture weights (`f32`
+  shares or `u8` of 255) into panels by group, rows with no group last,
+  and orders the components by prevalence; `bars` stacks them from the
+  bottom, a pixel column the renormalised sum of its rows, panels as wide
+  as their rows (`widths`), and `Drawn::at` finds the panel and component
+  under a pixel. `figure` draws them in senna's panel widths
+  (`senna_widths`) with its title, panel names (turned when one is too
+  wide) and key; `name_rows` sets panel names in terminal
+  rows. `chart::heatmap::by_margin` takes each group's top features by
+  their lead over the next group (by level with one group), `candidates`
+  and `top_by_margin` choose in two stages, `zscore_rows` scales rows,
+  and `draw_heat` draws senna's heatmap with its ramp key (`HeatLayout::at`
+  for clicks); `thumbnail` and `tsv` are pinto's. `chart::note` and
+  `chart::step_top` serve both; `map::colour::diverging_lin` is the
+  heatmap colour in linear light.
+- `save`: saving a figure, on ratatui alone. `save::Field`: a one-line
+  field whose suggested text starts selected, so typing replaces it and an
+  arrow keeps it to edit. `free_stem` numbers a name (`Numbering::Suffix`
+  `stem-2`, or `Counter` `stem-001`) past every file a save writes, and
+  `stem_of` drops a typed extension and expands `~`. `SaveDialog` asks
+  what to save, the page's width, the dpi and the name over a
+  `SaveTarget` the viewer implements; `key` gives `SaveKey::Save` with a
+  `SaveRequest` on enter, and a name whose files exist is replaced only
+  on a second enter, asked again whenever the name changes. Styles come
+  from a `look::Look` (the terminal's, or a `chrome::Chrome`).
+- `gallery`: what a viewer saved, in a directory it names
+  (`.senna-view`), newest first with a thumbnail each, kept from one
+  session to the next. `Gallery::open(dir, Policy)`, `add`, `remove`,
+  `relocate` (to a folder or a new name, a set's files together) and
+  `check`; the log is read again before each change, so two viewers in
+  one directory keep each other's saves. `Policy::plain()` drops entries
+  whose file is gone; a `Policy` can keep them, set aside a log it cannot
+  read, and keep the log private. What a viewer keeps beside an entry is
+  its `Entry::extra`. `gallery::thumb`: `shrink` in linear light,
+  `write_png`, `read_png`. `gallery::strip::Strip`: the strip of saved
+  figures on the left, scrolled by the wheel, its keys (`Keymap`) coming
+  back as `Action`s; thumbnails drawn by a `ThumbPainter`
+  (`ProtocolPainter` with `graphics`).
+- `gallery-trace`: `Policy::traced()`, each file of a save with its size,
+  time and SHA-256, and nothing moved or deleted unless it is the file
+  recorded and the log is this user's alone.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`
