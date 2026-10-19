@@ -193,3 +193,47 @@ fn cells_show_the_bytes_a_drawn_frame_encodes_to() {
     assert_eq!(cell.bg, Color::Rgb(byte, byte, byte));
     assert_eq!(cell.fg, Color::Rgb(byte, byte, byte));
 }
+
+#[test]
+fn bytes_fit_as_a_frame_made_from_them() {
+    // Bytes from a linear congruential sequence, 7×9 under cells that run
+    // past its edge: the bytes in fit as a frame from them, for each set.
+    let mut x = 1u32;
+    let rgba: Vec<u8> = (0..7 * 9 * 4)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 24) as u8
+        })
+        .collect();
+    let bg = Theme::DARK.background;
+    let frame = from_bytes(7, 9, &rgba);
+    for glyphs in [Glyphs::HalfBlocks, Glyphs::Quadrants, Glyphs::Symbols] {
+        let ppc = glyphs.pixels_per_cell(2.);
+        let bytes = Cells::fit_srgba((7, 9), &rgba, bg, glyphs, ppc, (5, 3)).unwrap();
+        assert_eq!(bytes, Cells::fit(&frame, glyphs, ppc, (5, 3)), "{glyphs:?}");
+    }
+}
+
+#[test]
+fn bytes_past_the_frame_read_as_the_page_as_pinto_did() {
+    // pinto's expectation: a 1×2 red frame under two quadrant cells.
+    let rgba = [RED[0], RED[1], RED[2], 255].repeat(2);
+    let bg = Theme::DARK.background;
+    let cells = Cells::fit_srgba((1, 2), &rgba, bg, Glyphs::Quadrants, (2, 4), (2, 1)).unwrap();
+    let mut buf = Buffer::empty(Rect::new(0, 0, 2, 1));
+    (&cells).render(buf.area, &mut buf);
+    assert_eq!(buf[(0, 0)].symbol(), "▘");
+    assert_eq!(buf[(0, 0)].fg, Color::Rgb(RED[0], RED[1], RED[2]));
+    assert_eq!(buf[(1, 0)].symbol(), " ");
+    assert_eq!(buf[(1, 0)].bg, Color::Rgb(bg[0], bg[1], bg[2]));
+}
+
+#[test]
+fn too_few_bytes_fit_no_cells() {
+    let bg = Theme::DARK.background;
+    let fit = |wh, n| Cells::fit_srgba(wh, &vec![0; n], bg, Glyphs::HalfBlocks, (1, 2), (1, 1));
+    assert!(fit((2, 2), 15).is_none());
+    assert!(fit((usize::MAX, 2), 16).is_none());
+    // Extra bytes past w × h × 4 are ignored.
+    assert!(fit((2, 2), 17).is_some());
+}
