@@ -390,6 +390,18 @@ impl<X: Serialize + DeserializeOwned> Gallery<X> {
         picture: Option<&RgbaImage>,
         extra: X,
     ) -> io::Result<()> {
+        self.add_view(files, what, picture.map(thumb::Picture::from), extra)
+    }
+
+    /// [`Gallery::add`] with the picture borrowed as bytes, so a viewer's
+    /// own frame needs no owned image.
+    pub fn add_view(
+        &mut self,
+        files: &[impl AsRef<Path>],
+        what: &str,
+        picture: Option<thumb::Picture<'_>>,
+        extra: X,
+    ) -> io::Result<()> {
         self.reload();
         // A private log this user does not own alone is not taken over by
         // saving over it: its entries would then be trusted to move and

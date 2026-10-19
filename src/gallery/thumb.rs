@@ -14,14 +14,43 @@ use std::io;
 use std::path::Path;
 use std::sync::LazyLock;
 
+/// A picture's RGBA bytes, borrowed: an [`RgbaImage`] or a viewer's own
+/// frame, row by row, four bytes a pixel.
+#[derive(Clone, Copy, Debug)]
+pub struct Picture<'a> {
+    w: u32,
+    h: u32,
+    rgba: &'a [u8],
+}
+
+impl<'a> Picture<'a> {
+    /// `w × h` pixels in `rgba`; `None` when it holds fewer bytes.
+    #[must_use]
+    pub fn new(w: u32, h: u32, rgba: &'a [u8]) -> Option<Self> {
+        let need = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+        (rgba.len() >= need).then_some(Self { w, h, rgba })
+    }
+}
+
+impl<'a> From<&'a RgbaImage> for Picture<'a> {
+    fn from(img: &'a RgbaImage) -> Self {
+        Self {
+            w: img.width(),
+            h: img.height(),
+            rgba: img.as_raw(),
+        }
+    }
+}
+
 /// `picture` shrunk to `width` pixels wide at its aspect, each pixel the
 /// mean in linear light of the ones it covers (never enlarged), opaque.
 #[must_use]
-pub fn shrink(picture: &RgbaImage, width: u32) -> RgbaImage {
-    let (fw, fh) = (picture.width() as usize, picture.height() as usize);
+pub fn shrink<'a>(picture: impl Into<Picture<'a>>, width: u32) -> RgbaImage {
+    let picture = picture.into();
+    let (fw, fh) = (picture.w as usize, picture.h as usize);
     let w = (width as usize).min(fw).max(1);
     let h = ((fh * w) as f32 / fw.max(1) as f32).round().max(1.) as usize;
-    let raw = picture.as_raw();
+    let raw = picture.rgba;
     let mut rgba = Vec::with_capacity(w * h * 4);
     for y in 0..h {
         let (y0, y1) = (y * fh / h, ((y + 1) * fh / h).max(y * fh / h + 1));

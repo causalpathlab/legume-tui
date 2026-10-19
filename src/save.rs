@@ -181,7 +181,9 @@ pub fn stem_of(name: &str, exts: &[&str]) -> String {
             let home = home.to_string_lossy();
             let home = home.trim_end_matches('/');
             if rest.is_empty() {
-                home.to_string()
+                // Home itself is a folder: keep the slash, so the dialog
+                // asks for a file name.
+                format!("{home}/")
             } else {
                 format!("{home}/{rest}")
             }
@@ -398,7 +400,7 @@ impl<S: Copy + PartialEq> SaveDialog<S> {
     /// Enter: the save, or what stands in its way.
     fn enter<T: SaveTarget<Scope = S>>(&mut self, t: &T) -> SaveKey<S> {
         let (stem, files) = self.files(t);
-        if stem.is_empty() || stem.ends_with('/') {
+        if stem.is_empty() || stem.ends_with('/') || Path::new(&stem).is_dir() {
             self.say("type a file name");
             return SaveKey::Open;
         }
