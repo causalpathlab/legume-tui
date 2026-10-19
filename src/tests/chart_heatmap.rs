@@ -157,15 +157,16 @@ fn observed_counts_rank_the_models_candidates() {
     let cols: Vec<String> = SHOWN.iter().map(|&g| A_B_C[g].to_string()).collect();
     let table = tsv(
         "mean ln(1+count)",
+        "feature",
         &["g1".to_string()],
         &["a".to_string()],
         &cols,
         &values,
     );
-    assert!(table.starts_with("# mean ln(1+count)\ngene\tmarks\tc\ta\tb\ng1\ta\t"));
+    assert!(table.starts_with("# mean ln(1+count)\nfeature\tmarks\tc\ta\tb\ng1\ta\t"));
     assert_eq!(
         table,
-        "# mean ln(1+count)\ngene\tmarks\tc\ta\tb\ng1\ta\t1.0000\t3.0000\t0.0000\n"
+        "# mean ln(1+count)\nfeature\tmarks\tc\ta\tb\ng1\ta\t1.0000\t3.0000\t0.0000\n"
     );
 }
 

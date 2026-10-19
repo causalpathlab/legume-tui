@@ -441,18 +441,20 @@ pub fn thumbnail(
 }
 
 /// A heatmap's values as a table (pinto's): a `# what` line, a header of
-/// `gene`, `marks` and the columns, then per row its name, the group it
-/// marks and its values to four places, tab-separated.
+/// `head` (what the rows are; pinto's `gene`), `marks` and the columns,
+/// then per row its name, the group it marks and its values to four
+/// places, tab-separated.
 #[must_use]
 pub fn tsv(
     what: &str,
+    head: &str,
     rows: &[String],
     marks: &[String],
     cols: &[String],
     values: &[f32],
 ) -> String {
     use std::fmt::Write as _;
-    let mut out = format!("# {what}\ngene\tmarks");
+    let mut out = format!("# {what}\n{head}\tmarks");
     for c in cols {
         out.push('\t');
         out.push_str(c);
