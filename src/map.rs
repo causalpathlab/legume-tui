@@ -14,3 +14,7 @@ pub mod raster;
 pub mod text;
 pub mod theme;
 pub mod viewport;
+
+#[cfg(test)]
+#[path = "tests/scene.rs"]
+mod tests;
