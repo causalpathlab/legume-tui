@@ -32,6 +32,10 @@ testing = ["dep:tempfile", "dep:vt100"]
 # viewport between data and pixels, the screen's chrome, and drawing a map:
 # points, text, labels a viewer can move, and keys.
 map = ["dep:rayon", "dep:image", "dep:noto-sans-mono-bitmap", "dep:serde", "dep:serde_json", "dep:tempfile"]
+# Charts drawn as a map is: a structure plot of each row's mixture,
+# stacked bars in panels by group, and a heatmap of the top features by
+# their margin over the next group.
+chart = ["map"]
 
 [dependencies]
 ratatui = "0.30"

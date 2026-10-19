@@ -76,6 +76,8 @@ mod plain;
 #[cfg(not(sessions))]
 use plain::{dir, session_at, stop, Control};
 
+#[cfg(feature = "chart")]
+pub mod chart;
 #[cfg(all(feature = "child", unix))]
 pub mod child;
 #[cfg(feature = "map")]
