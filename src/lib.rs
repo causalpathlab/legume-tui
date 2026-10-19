@@ -86,12 +86,18 @@ pub mod chrome;
 pub mod cli;
 #[cfg(feature = "export")]
 pub mod export;
+#[cfg(feature = "gallery")]
+pub mod gallery;
 #[cfg(feature = "graphics")]
 pub mod graphics;
 #[cfg(feature = "logs")]
 pub mod logs;
+#[cfg(any(feature = "save", feature = "gallery"))]
+pub mod look;
 #[cfg(feature = "map")]
 pub mod map;
+#[cfg(feature = "save")]
+pub mod save;
 #[cfg(all(feature = "testing", sessions))]
 pub mod testing;
 

@@ -643,6 +643,32 @@ Other wording may change.
   for clicks); `thumbnail` and `tsv` are pinto's. `chart::note` and
   `chart::step_top` serve both; `map::colour::diverging_lin` is the
   heatmap colour in linear light.
+- `save`: saving a figure, on ratatui alone. `save::Field`: a one-line
+  field whose suggested text starts selected, so typing replaces it and an
+  arrow keeps it to edit. `free_stem` numbers a name (`Numbering::Suffix`
+  `stem-2`, or `Counter` `stem-001`) past every file a save writes, and
+  `stem_of` drops a typed extension and expands `~`. `SaveDialog` asks
+  what to save, the page's width, the dpi and the name over a
+  `SaveTarget` the viewer implements; `key` gives `SaveKey::Save` with a
+  `SaveRequest` on enter, and a name whose files exist is replaced only
+  on a second enter, asked again whenever the name changes. Styles come
+  from a `look::Look` (the terminal's, or a `chrome::Chrome`).
+- `gallery`: what a viewer saved, in a directory it names
+  (`.senna-view`), newest first with a thumbnail each, kept from one
+  session to the next. `Gallery::open(dir, Policy)`, `add`, `remove`,
+  `relocate` (to a folder or a new name, a set's files together) and
+  `check`; the log is read again before each change, so two viewers in
+  one directory keep each other's saves. `Policy::plain()` drops entries
+  whose file is gone; a `Policy` can keep them, set aside a log it cannot
+  read, and keep the log private. What a viewer keeps beside an entry is
+  its `Entry::extra`. `gallery::thumb`: `shrink` in linear light,
+  `write_png`, `read_png`. `gallery::strip::Strip`: the strip of saved
+  figures on the left, scrolled by the wheel, its keys (`Keymap`) coming
+  back as `Action`s; thumbnails drawn by a `ThumbPainter`
+  (`ProtocolPainter` with `graphics`).
+- `gallery-trace`: `Policy::traced()`, each file of a save with its size,
+  time and SHA-256, and nothing moved or deleted unless it is the file
+  recorded and the log is this user's alone.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`
