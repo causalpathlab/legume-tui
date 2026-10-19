@@ -8,6 +8,7 @@
 //! parameter here, not senna's constant.
 
 use super::colour::Lin;
+use super::labels::Rect;
 use super::raster::{blend_round, Canvas, Frame};
 use super::text::{self, Font};
 
@@ -21,7 +22,7 @@ pub fn draw_legend(
     entries: &[(String, Lin, Lin)],
     font: Font,
     max_rows: Option<(usize, Lin)>,
-) -> Option<[f32; 4]> {
+) -> Option<Rect> {
     if entries.is_empty() || max_rows.is_some_and(|(m, _)| m == 0) {
         return None;
     }
@@ -75,7 +76,7 @@ pub fn draw_ramp_key(
     ramp: &[Lin],
     font: Font,
     ink: Lin,
-) -> [f32; 4] {
+) -> Rect {
     let bg = frame.background();
     let lh = font.line_height() as i32;
     let (x0, y0) = (lh / 2, lh / 2);
