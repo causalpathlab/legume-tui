@@ -94,14 +94,16 @@ impl Stopper {
     /// Go one step further, interrupt then kill, and tell the child.
     /// Returns whether this stop kills.
     pub fn stop(&self) -> bool {
-        let raise = |l: u8| Some((l + 1).min(KILL));
-        let now = raise(
-            self.level
-                .fetch_update(SeqCst, SeqCst, raise)
-                .unwrap_or(KILL),
-        );
+        let mut was = self.level.load(SeqCst);
+        let now = loop {
+            let now = (was + 1).min(KILL);
+            match self.level.compare_exchange_weak(was, now, SeqCst, SeqCst) {
+                Ok(_) => break now,
+                Err(l) => was = l,
+            }
+        };
         self.deliver();
-        now == Some(KILL)
+        now == KILL
     }
 
     /// What the program's quit path (its quit key, a `kill`) does: a save

@@ -420,7 +420,8 @@ impl Host {
                     if shared.closing.load(SeqCst) {
                         break;
                     }
-                    if let Ok(conn) = conn {
+                    // One whose peer is gone already is let go.
+                    if let Ok(conn) = conn.and_then(wire::accepted) {
                         let shared = Arc::clone(&shared);
                         std::thread::spawn(move || serve(conn, &shared));
                     }
@@ -605,7 +606,7 @@ fn relay_to_client(sock: UnixStream, frames: Arc<Queue>, id: u64, shared: Arc<Sh
 
 /// One connection: a question, a kill, a watcher, or a client attaching.
 fn serve(mut conn: UnixStream, shared: &Arc<Shared>) {
-    let _ = conn.set_write_timeout(Some(STALL));
+    let _ = wire::set_timeout(&conn, false, Some(STALL));
     let Ok(Some((tag, body))) = wire::read_frame(&mut conn) else {
         return;
     };

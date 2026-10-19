@@ -104,3 +104,32 @@ fn a_child_held_is_polled_as_a_loop_does_and_let_go_when_it_ends() {
     assert_eq!(stopper.id(), None, "let go once it ended");
     assert!(stopper.release().is_none());
 }
+
+#[test]
+fn a_child_that_ignores_the_interrupt_runs_on_until_killed() {
+    let env = Session::plain(&TOOL).child_env();
+    let stopper = Arc::new(Stopper::new());
+    let held = Arc::clone(&stopper);
+    let (ready, is_ready) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        // Says so once the interrupt is ignored, so the stop comes after.
+        let mut fit = Command::new("sh");
+        let script = "trap '' INT; echo ready >&2; sleep 30";
+        env.apply(fit.args(["-c", script]), Group::Own);
+        run_one(fit, &held, |s| {
+            if s == Said::Line("ready".into()) {
+                let _ = ready.send(());
+            }
+        })
+    });
+    is_ready
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the child started");
+    assert!(!stopper.stop(), "interrupted first");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(!worker.is_finished(), "the interrupt did not end it");
+    let asked = Instant::now();
+    assert!(stopper.stop(), "then killed");
+    assert_eq!(worker.join().unwrap(), Err(Failed::Stopped));
+    assert!(asked.elapsed() < Duration::from_secs(10));
+}

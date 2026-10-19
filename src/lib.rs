@@ -637,7 +637,7 @@ fn watch() -> Option<Arc<Control>> {
             let name = std::env::var(SESSION_VAR).ok()?;
             dir::check_name(&name).ok()?;
             let path = dir::socket(&dir::runtime_dir().ok()?, &name);
-            let sock = std::os::unix::net::UnixStream::connect(path).ok()?;
+            let sock = wire::connect(path).ok()?;
             wire::write_frame(&sock, wire::WATCH, &[]).ok()?;
             sock.set_nonblocking(true).ok()?;
             Some(Control::new(sock.into()))
