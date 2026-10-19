@@ -6,6 +6,7 @@ use super::*;
 use crate::map::theme::Theme;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use ratatui_image::picker::ProtocolType;
 
 fn frame(w: usize, h: usize) -> Frame {
     Frame::from_srgba(w, h, &vec![7; w * h * 4], Theme::DARK.background)
@@ -244,7 +245,6 @@ fn map_graphics_name_the_crate_protocol_where_there_is_one() {
 
 #[test]
 fn map_graphics_want_the_protocol_pinto_asked_for() {
-    use ratatui_image::picker::ProtocolType;
     assert_eq!(MapGraphics::Auto.protocol(), None);
     assert_eq!(
         MapGraphics::KittyInline.protocol(),
@@ -285,4 +285,170 @@ fn map_graphics_parse_as_pinto_named_them() {
             "blocks"
         ]
     );
+}
+
+#[test]
+fn file_frames_are_named_with_the_public_prefix() {
+    assert_eq!(FILE_PREFIX, "tty-graphics-protocol");
+    let mut k = Kitty::new(Transport::File).named("lt6-prefix");
+    let mut out = Vec::new();
+    k.show(&mut out, &frame(2, 2), (0, 0), (1, 1)).unwrap();
+    let path = named_file(&out);
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with(&format!("{FILE_PREFIX}-lt6-prefix-")));
+}
+
+/// pinto's `Gfx::pick` and `Gfx::name`, as pinto wrote them: the label of
+/// the drawing method for `choice`, inside tmux or not, the picker having
+/// taken `answered` (Halfblocks: no image protocol) for auto, and kitty's
+/// pictures going by `transport` where the terminal is asked.
+fn pinto_label(
+    choice: MapGraphics,
+    tmux: bool,
+    answered: ProtocolType,
+    transport: Transport,
+) -> String {
+    let picker = choice.protocol().unwrap_or(answered);
+    let kitty = |transport: Transport| {
+        let how = match transport {
+            Transport::Inline => "inline",
+            _ => "file",
+        };
+        let tmux = if tmux { ", tmux" } else { "" };
+        format!("kitty ({how}{tmux})")
+    };
+    let via_picker = || format!("{picker:?}").to_lowercase();
+    let cells = |g: Glyphs| g.name().to_string();
+    match choice {
+        MapGraphics::Kitty => kitty(transport),
+        MapGraphics::KittyInline => kitty(Transport::Inline),
+        MapGraphics::Sixel | MapGraphics::Iterm2 => via_picker(),
+        MapGraphics::Quadrants => cells(Glyphs::Quadrants),
+        MapGraphics::Symbols => cells(Glyphs::Symbols),
+        MapGraphics::Blocks => cells(Glyphs::HalfBlocks),
+        MapGraphics::Auto if tmux => cells(Glyphs::Quadrants),
+        MapGraphics::Auto => match picker {
+            ProtocolType::Kitty => kitty(transport),
+            ProtocolType::Halfblocks => cells(Glyphs::Quadrants),
+            _ => via_picker(),
+        },
+    }
+}
+
+const CHOICES: [MapGraphics; 8] = [
+    MapGraphics::Auto,
+    MapGraphics::Kitty,
+    MapGraphics::KittyInline,
+    MapGraphics::Sixel,
+    MapGraphics::Iterm2,
+    MapGraphics::Quadrants,
+    MapGraphics::Symbols,
+    MapGraphics::Blocks,
+];
+
+#[test]
+fn every_choice_resolves_as_pinto_picked_and_named_it() {
+    for choice in CHOICES {
+        for tmux in [false, true] {
+            for answered in [
+                ProtocolType::Halfblocks,
+                ProtocolType::Kitty,
+                ProtocolType::Sixel,
+                ProtocolType::Iterm2,
+            ] {
+                for transport in [Transport::File, Transport::Inline] {
+                    let r = choice.resolve(tmux, answered, transport);
+                    assert_eq!(
+                        r.name(),
+                        pinto_label(choice, tmux, answered, transport),
+                        "{choice:?}, tmux {tmux}, {answered:?}, {transport:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn auto_takes_quadrants_in_tmux_and_without_an_image_protocol() {
+    use ProtocolType::*;
+    let auto = |tmux, p| MapGraphics::Auto.resolve(tmux, p, Transport::File);
+    for p in [Halfblocks, Kitty, Sixel, Iterm2] {
+        assert_eq!(auto(true, p), Resolved::Cells(Glyphs::Quadrants));
+    }
+    assert_eq!(auto(false, Halfblocks), Resolved::Cells(Glyphs::Quadrants));
+    assert_eq!(
+        auto(false, Kitty),
+        Resolved::Kitty {
+            transport: Transport::File,
+            tmux: false
+        }
+    );
+    assert_eq!(auto(false, Sixel), Resolved::Picker(Sixel));
+    assert_eq!(auto(false, Iterm2), Resolved::Picker(Iterm2));
+    assert_eq!(
+        MapGraphics::Auto.resolve(false, Kitty, Transport::Inline),
+        Resolved::Kitty {
+            transport: Transport::Inline,
+            tmux: false
+        }
+    );
+}
+
+#[test]
+fn a_named_choice_resolves_to_itself_whatever_the_terminal_said() {
+    use ProtocolType::*;
+    for tmux in [false, true] {
+        for answered in [Halfblocks, Kitty, Sixel, Iterm2] {
+            let r = |g: MapGraphics, t| g.resolve(tmux, answered, t);
+            assert_eq!(
+                r(MapGraphics::Kitty, Transport::File),
+                Resolved::Kitty {
+                    transport: Transport::File,
+                    tmux
+                }
+            );
+            assert_eq!(
+                r(MapGraphics::KittyInline, Transport::File),
+                Resolved::Kitty {
+                    transport: Transport::Inline,
+                    tmux
+                }
+            );
+            assert_eq!(
+                r(MapGraphics::Sixel, Transport::File),
+                Resolved::Picker(Sixel)
+            );
+            assert_eq!(
+                r(MapGraphics::Iterm2, Transport::File),
+                Resolved::Picker(Iterm2)
+            );
+            assert_eq!(
+                r(MapGraphics::Quadrants, Transport::File),
+                Resolved::Cells(Glyphs::Quadrants)
+            );
+            assert_eq!(
+                r(MapGraphics::Symbols, Transport::File),
+                Resolved::Cells(Glyphs::Symbols)
+            );
+            assert_eq!(
+                r(MapGraphics::Blocks, Transport::File),
+                Resolved::Cells(Glyphs::HalfBlocks)
+            );
+        }
+    }
+}
+
+#[test]
+fn resolved_methods_are_named_as_pinto_prints_them() {
+    let kitty = |transport, tmux| Resolved::Kitty { transport, tmux }.name();
+    assert_eq!(kitty(Transport::File, false), "kitty (file)");
+    assert_eq!(kitty(Transport::File, true), "kitty (file, tmux)");
+    assert_eq!(kitty(Transport::Inline, false), "kitty (inline)");
+    assert_eq!(kitty(Transport::Inline, true), "kitty (inline, tmux)");
+    assert_eq!(Resolved::Picker(ProtocolType::Sixel).name(), "sixel");
+    assert_eq!(Resolved::Picker(ProtocolType::Iterm2).name(), "iterm2");
+    assert_eq!(Resolved::Cells(Glyphs::Quadrants).name(), "quadrants");
+    assert_eq!(Resolved::Cells(Glyphs::Symbols).name(), "symbols");
+    assert_eq!(Resolved::Cells(Glyphs::HalfBlocks).name(), "half-blocks");
 }
