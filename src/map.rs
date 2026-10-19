@@ -6,6 +6,7 @@
 //! around a map, styled by a theme, is [`crate::chrome`].
 
 pub mod colour;
+pub mod points;
 pub mod raster;
 pub mod text;
 pub mod theme;
