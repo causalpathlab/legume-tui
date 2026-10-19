@@ -452,3 +452,33 @@ fn resolved_methods_are_named_as_pinto_prints_them() {
     assert_eq!(Resolved::Cells(Glyphs::Symbols).name(), "symbols");
     assert_eq!(Resolved::Cells(Glyphs::HalfBlocks).name(), "half-blocks");
 }
+
+#[test]
+fn resolved_methods_give_their_pixels_per_cell() {
+    let font = (10.0, 20.0);
+    let kitty = |transport, tmux| Resolved::Kitty { transport, tmux }.pixels_per_cell(font);
+    assert_eq!(kitty(Transport::File, false), font);
+    assert_eq!(kitty(Transport::Inline, true), font);
+    assert_eq!(
+        Resolved::Picker(ProtocolType::Sixel).pixels_per_cell(font),
+        font
+    );
+    assert_eq!(
+        Resolved::Picker(ProtocolType::Iterm2).pixels_per_cell(font),
+        font
+    );
+    // Glyph grids: cells twice as tall as wide.
+    let cells = |g| Resolved::Cells(g).pixels_per_cell(font);
+    assert_eq!(cells(Glyphs::HalfBlocks), (1.0, 2.0));
+    assert_eq!(cells(Glyphs::Quadrants), (2.0, 4.0));
+    assert_eq!(cells(Glyphs::Symbols), (8.0, 16.0));
+    // A cell the terminal reports as nothing is a pixel each way.
+    assert_eq!(
+        Resolved::Picker(ProtocolType::Sixel).pixels_per_cell((0.0, 0.0)),
+        (1.0, 1.0)
+    );
+    assert_eq!(
+        Resolved::Cells(Glyphs::Quadrants).pixels_per_cell((0.0, 0.0)),
+        (2.0, 2.0)
+    );
+}

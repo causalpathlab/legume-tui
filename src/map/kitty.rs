@@ -368,8 +368,10 @@ pub enum Resolved {
 }
 
 impl Resolved {
-    /// The method's name as pinto shows it: `kitty (file)`,
-    /// `kitty (inline, tmux)`, `sixel`, `iterm2`, `quadrants`, ...
+    /// The method's name, for a status line or a log: `kitty` with its
+    /// transport and whether it passes through tmux (`kitty (file)`,
+    /// `kitty (inline, tmux)`), the picker's protocol (`sixel`, `iterm2`),
+    /// or the glyphs' name (`quadrants`, `symbols`, `half-blocks`).
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -386,6 +388,22 @@ impl Resolved {
                 ProtocolType::Iterm2 => "iterm2",
             },
             Resolved::Cells(glyphs) => glyphs.name(),
+        }
+    }
+
+    /// Frame pixels per terminal cell, (x, y), for a font cell of `cell`
+    /// pixels (each side at least one): the cell itself for an image
+    /// (Kitty, the picker's), and for block characters the glyph grid's
+    /// square pixels, [`Glyphs::pixels_per_cell`] at the cell's aspect.
+    #[must_use]
+    pub fn pixels_per_cell(self, cell: (f32, f32)) -> (f32, f32) {
+        let (w, h) = (cell.0.max(1.0), cell.1.max(1.0));
+        match self {
+            Resolved::Kitty { .. } | Resolved::Picker(_) => (w, h),
+            Resolved::Cells(glyphs) => {
+                let (pw, ph) = glyphs.pixels_per_cell(h / w);
+                (pw as f32, ph as f32)
+            }
         }
     }
 }
