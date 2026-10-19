@@ -11,9 +11,9 @@
 /// Which way data y runs on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum YAxis {
-    /// Up, as on a plot (senna, lupin).
+    /// Up, as on a plot.
     Up,
-    /// Down, as in an image (pinto).
+    /// Down, as in an image.
     Down,
 }
 
@@ -44,7 +44,7 @@ pub struct Viewport {
 
 impl Viewport {
     /// Fit `bounds` into `w × h`, the tighter axis filled to `margin` of
-    /// the frame (senna takes 0.92, pinto 1).
+    /// the frame (1 fills it).
     #[must_use]
     pub fn fit(bounds: Bounds, w: usize, h: usize, margin: f32, y: YAxis) -> Self {
         let [x0, y0, x1, y1] = bounds;
@@ -152,7 +152,7 @@ impl Viewport {
 
     /// The same view in a `w × h` frame: its centre kept, scaled so what
     /// it showed still fits. A view never drawn (no pixels) is fitted to
-    /// `bounds` afresh, with senna's margin.
+    /// `bounds` afresh, filling 0.92 of the frame.
     #[must_use]
     pub fn resized(self, bounds: Bounds, w: usize, h: usize) -> Self {
         if self.w > 0 && self.h > 0 {

@@ -29,8 +29,35 @@ child = ["dep:unicode-width"]
 # canned terminal answers and a model of the visible screen.
 testing = ["dep:tempfile", "dep:vt100"]
 # What the tools' map viewers share: colour, the page's theme, the
-# viewport between data and pixels, and the screen's chrome.
-map = []
+# viewport between data and pixels, the screen's chrome, and drawing a map:
+# points, text, labels a viewer can move, and keys.
+# The colours, the page's theme, the viewport and the screen's chrome
+# alone: no fonts or images.
+style = []
+map = ["style", "dep:rayon", "dep:image", "dep:noto-sans-mono-bitmap", "dep:serde", "dep:serde_json", "dep:tempfile"]
+# A map's frame on the terminal through ratatui-image: the cell in frame
+# pixels, the thinnest line, and the frame fitted to an area. Apart from
+# `map` so a tool that only exports maps does not take the image protocols.
+map-display = ["map", "graphics"]
+# A map or a grid of them as a PDF page: the raster as one image, its text
+# set over it in Helvetica; page sizes, and `--pdf`, `--width`, `--dpi`.
+export = ["map", "dep:pdf-writer", "dep:miniz_oxide"]
+# pinto's own ways of putting a map on screen: kitty graphics with two
+# images in turn, through a file or inline, and coloured block characters.
+map-kitty = ["map", "graphics", "dep:flate2", "dep:base64"]
+# Charts drawn as a map is: a structure plot of each row's mixture,
+# stacked bars in panels by group, and a heatmap of the top features by
+# their margin over the next group.
+chart = ["map"]
+# A save dialog for a viewer's exports: what, how large, how fine and the
+# file name, with names that never replace a file unasked. ratatui only.
+save = []
+# The figures a viewer saved, kept from one session to the next with a
+# thumbnail each, and the strip that shows them.
+gallery = ["dep:serde", "dep:serde_json", "dep:tempfile", "dep:image"]
+# Each saved file's size, time and SHA-256, so a figure can be traced and
+# checked against the files on disk.
+gallery-trace = ["gallery", "dep:sha2"]
 
 [dependencies]
 # `unstable-rendered-line-info`: a paragraph's wrapped row count, for popups.
@@ -41,6 +68,16 @@ tempfile = { version = "3.2", optional = true }
 vt100 = { version = "0.16", optional = true }
 log = { version = "0.4", optional = true }
 unicode-width = { version = "0.2", optional = true }
+rayon = { version = "1.10", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+noto-sans-mono-bitmap = { version = "0.3", optional = true, default-features = false, features = ["regular", "bold", "size_16", "size_20", "size_24", "size_32", "unicode-basic-latin", "unicode-latin-1-supplement"] }
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
+pdf-writer = { version = "0.15", optional = true }
+miniz_oxide = { version = "0.8", optional = true }
+flate2 = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+sha2 = { version = "0.11", optional = true }
 
 # Pseudo-terminals, sessions and signals; Unix only.
 [target.'cfg(unix)'.dependencies]

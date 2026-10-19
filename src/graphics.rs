@@ -180,6 +180,23 @@ pub fn pick_protocol(
     (picker, answer)
 }
 
+/// Frame pixels per terminal cell under `picker`, across and down, at
+/// least one each way: the cell the terminal reported in `answer` where
+/// `picker` is for block characters, as the one [`pick_protocol`] falls
+/// back to has a stock cell ([`Picker::halfblocks`]); the picker's own
+/// otherwise, which [`pick_protocol`] made from the reported cell.
+#[must_use]
+pub fn cell_size(picker: &Picker, answer: Option<Answer>) -> (f32, f32) {
+    let (w, h) = match (picker.protocol_type(), answer.and_then(|a| a.cell)) {
+        (ProtocolType::Halfblocks, Some(cell)) => cell,
+        _ => {
+            let f = picker.font_size();
+            (f.width, f.height)
+        }
+    };
+    (f32::from(w.max(1)), f32::from(h.max(1)))
+}
+
 /// The protocol [`Fallback::Probe`] takes, given the protocol the
 /// terminal answered with (`answered`), whether it is inside tmux, and
 /// its environment (`var`). As ratatui-image's own query decides: an

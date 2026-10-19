@@ -305,3 +305,26 @@ mod query {
         assert_eq!(answer.and_then(|a| a.protocol), Some(ProtocolType::Sixel));
     }
 }
+
+#[test]
+fn a_cell_is_the_size_the_terminal_reported_not_a_stock_one() {
+    let answer = |cell| Answer {
+        cell,
+        ..Answer::default()
+    };
+    // Block characters: the picker's cell is stock (10 × 20).
+    let blocks = Picker::halfblocks();
+    assert_eq!(cell_size(&blocks, Some(answer(Some((8, 17))))), (8.0, 17.0));
+    let stock = blocks.font_size();
+    let stock = (f32::from(stock.width), f32::from(stock.height));
+    assert_eq!(cell_size(&blocks, None), stock);
+    assert_eq!(cell_size(&blocks, Some(answer(None))), stock);
+    // An image protocol's picker was made with the reported cell.
+    #[allow(deprecated)]
+    let mut sixel = Picker::from_fontsize((9, 18).into());
+    sixel.set_protocol_type(ProtocolType::Sixel);
+    assert_eq!(cell_size(&sixel, Some(answer(Some((9, 18))))), (9.0, 18.0));
+    assert_eq!(cell_size(&sixel, None), (9.0, 18.0));
+    // At least a pixel each way.
+    assert_eq!(cell_size(&blocks, Some(answer(Some((0, 0))))), (1.0, 1.0));
+}
