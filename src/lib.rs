@@ -356,10 +356,11 @@ impl Tool {
                     Ok(code) => std::process::exit(code),
                     // Asked for by name: not one to run plain in its place.
                     Err(e) if opts.name.is_some() => return Err(e),
-                    Err(e) => {
-                        eprintln!("legume-tui: running without a session ({e})");
-                        Session::bypassed(Bypass::NoHost)
-                    }
+                    Err(e) => Session::no_host(format!(
+                        "legume-tui: running without a session ({e}), so {} does \
+                         not detach; {NO_DETACH_VAR}=1 runs without trying",
+                        detach_key()
+                    )),
                 }
             }
         };
@@ -711,6 +712,9 @@ struct Inner {
     /// What a plain session leaves ([`Session::leave`]), said when its
     /// screen goes.
     left: Mutex<Option<String>>,
+    /// Why a launch could not host ([`Bypass::NoHost`]), said again as
+    /// each screen goes, after what the program left.
+    no_host: OnceLock<String>,
 }
 
 /// What one round's wait ([`Session::poll`]) ended with.
@@ -818,6 +822,7 @@ impl Session {
             at,
             said: Mutex::new(String::new()),
             left: Mutex::new(None),
+            no_host: OnceLock::new(),
         };
         Self {
             inner: Arc::new(inner),
@@ -841,6 +846,17 @@ impl Session {
 
     fn bypassed(why: Bypass) -> Self {
         Self::new(None, Some(why))
+    }
+
+    /// Plain, as a launch could not host it ([`Bypass::NoHost`]): `why`
+    /// is said now and again as each screen goes, since the screen opening
+    /// next covers it at once.
+    #[cfg(sessions)]
+    fn no_host(why: String) -> Self {
+        eprintln!("{why}");
+        let session = Self::bypassed(Bypass::NoHost);
+        let _ = session.inner.no_host.set(why);
+        session
     }
 
     /// Plain, inside another TUI's session: repaints after every attach
@@ -1112,6 +1128,12 @@ impl Session {
             set_shown(false);
             if let Some(text) = lock(&self.inner.left).take() {
                 eprintln!("{}", text.trim_end());
+            }
+            // Not after a panic: it is no cause of one.
+            if !std::thread::panicking() {
+                if let Some(why) = self.inner.no_host.get() {
+                    eprintln!("{why}");
+                }
             }
         }
     }

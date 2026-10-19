@@ -25,7 +25,8 @@ pub enum Bypass {
     Multiplexer,
     /// Hosting is opt-in and was not asked for.
     NotAsked,
-    /// A host was wanted but could not start.
+    /// A host was wanted but could not start: why is said before the
+    /// screen, and again after it.
     NoHost,
     /// Sessions are not supported on this platform.
     Unsupported,
