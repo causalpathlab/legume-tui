@@ -84,6 +84,10 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.12
+
+- `MapGraphics`'s choices read as plain text in a tool's `--help`, and each choice lists the terminals auto gives it.
+
 ## 0.3.11
 
 - `Viewport::zoom_at` takes `Limits::scale` either way round, and ignores limits that are not numbers, instead of panicking.

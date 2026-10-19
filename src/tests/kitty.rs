@@ -482,3 +482,20 @@ fn resolved_methods_give_their_pixels_per_cell() {
         (2.0, 2.0)
     );
 }
+
+#[cfg(feature = "clap")]
+#[test]
+fn graphics_choices_read_as_plain_text_in_help() {
+    use clap::ValueEnum;
+    for g in MapGraphics::value_variants() {
+        let v = g.to_possible_value().unwrap();
+        let help = v.get_help().map(ToString::to_string).unwrap_or_default();
+        assert!(!help.contains('`') && !help.contains("]("), "{help}");
+    }
+    let kitty = MapGraphics::Kitty.to_possible_value().unwrap();
+    let help = kitty.get_help().unwrap().to_string();
+    assert!(
+        !help.contains("WezTerm"),
+        "auto gives WezTerm iTerm2, not kitty: {help}"
+    );
+}

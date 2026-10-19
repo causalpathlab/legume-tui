@@ -270,19 +270,20 @@ impl Drop for Kitty {
 #[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum MapGraphics {
-    /// Ask the terminal; quadrants when it has no graphics protocol, and
-    /// inside tmux ([`MapGraphics::resolve`]).
+    /// Ask the terminal what it can draw; block quadrants inside tmux or
+    /// when it has no graphics protocol.
     #[default]
     Auto,
     /// Kitty graphics; pixels go through a temp file, or inline when over
-    /// ssh (kitty, Ghostty, WezTerm).
+    /// ssh (kitty, Ghostty).
     Kitty,
     /// Kitty graphics, always inline (in tmux, through passthrough; best
     /// effort).
     KittyInline,
-    /// Sixel graphics (iTerm2, WezTerm, foot, xterm).
+    /// Sixel graphics (foot, xterm).
     Sixel,
-    /// iTerm2 inline images.
+    /// iTerm2 inline images (iTerm2, WezTerm, VS Code, mintty, Tabby,
+    /// Hyper, Rio, Warp).
     Iterm2,
     /// Block characters, 2×2 pixels per character; any terminal.
     Quadrants,
