@@ -589,7 +589,18 @@ Other wording may change.
   line, and `Hits` finds the label under a click. `OffsetBook` keeps
   offsets per layout, by label name, in one JSON file.
   `map::legend`: `draw_legend` (with `+k more` past a row limit) and
-  `draw_ramp_key`.
+  `draw_ramp_key`. `map::pointer::Pointer` turns terminal mouse events
+  over a `MapArea` into `MapAction`s in frame pixels: a drag pans (and
+  goes on past the map's edge; any release ends it), the wheel zooms at
+  the pointer, a press released in place clicks (adding, by
+  `PointerOpts`, with the right button or held modifiers), motion hovers,
+  and a press on a label drags the label (`MoveLabel`). `LabelEdit` moves
+  labels from the keyboard, entered with `L`: Tab and BackTab pick a
+  label, the arrows nudge it half a line (Shift: two), Backspace puts it
+  back and Esc leaves. `nav_key` reads the zoom, pan and fit keys.
+- `map-display`: `map` and `graphics`, for a map on the terminal:
+  `map::display::cell` (frame pixels per cell), `stroke_floor` and
+  `fit_protocol`, the frame fitted to an area through ratatui-image.
   `chrome::Chrome`: page, hint and menu styles from a theme, or the
   terminal's own with none, bordered popups, toasts and scrolled lists.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
