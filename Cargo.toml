@@ -28,6 +28,9 @@ child = ["dep:unicode-width"]
 # A harness that drives a tool's TUI through pseudo-terminals, for its tests:
 # canned terminal answers and a model of the visible screen.
 testing = ["dep:tempfile", "dep:vt100"]
+# What the tools' map viewers share: colour, the page's theme, the
+# viewport between data and pixels, and the screen's chrome.
+map = []
 
 [dependencies]
 ratatui = "0.30"
