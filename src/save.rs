@@ -142,10 +142,10 @@ pub enum Numbering {
 /// The files of `stem` that exist: `stem` and each of `suffixes` (`.pdf`,
 /// `-structure.png`).
 #[must_use]
-pub fn taken(stem: &str, suffixes: &[&str]) -> Vec<PathBuf> {
+pub fn taken(stem: &str, suffixes: &[impl AsRef<str>]) -> Vec<PathBuf> {
     suffixes
         .iter()
-        .map(|s| PathBuf::from(format!("{stem}{s}")))
+        .map(|s| PathBuf::from(format!("{stem}{}", s.as_ref())))
         .filter(|p| p.exists())
         .collect()
 }
@@ -153,7 +153,7 @@ pub fn taken(stem: &str, suffixes: &[&str]) -> Vec<PathBuf> {
 /// The first name from `stem`, numbered as `numbering` says, none of whose
 /// files (`stem` and each of `suffixes`) exists yet.
 #[must_use]
-pub fn free_stem(stem: &str, suffixes: &[&str], numbering: Numbering) -> String {
+pub fn free_stem(stem: &str, suffixes: &[impl AsRef<str>], numbering: Numbering) -> String {
     let free = |s: &str| taken(s, suffixes).is_empty();
     match numbering {
         Numbering::Suffix if free(stem) => stem.to_string(),
@@ -196,6 +196,20 @@ pub fn stem_of(name: &str, exts: &[&str]) -> String {
         }
     }
     name
+}
+
+/// Why `stem` cannot be saved to, or `None`: no name, a folder (ending in
+/// `/` or one that exists), or a folder that is not there.
+#[must_use]
+pub fn name_problem(stem: &str) -> Option<String> {
+    let path = Path::new(stem);
+    if stem.is_empty() || stem.ends_with('/') || path.is_dir() {
+        return Some("type a file name".into());
+    }
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    parent
+        .filter(|d| !d.is_dir())
+        .map(|d| format!("no folder {}", d.display()))
 }
 
 /// What a viewer offers to save, for its [`SaveDialog`].
@@ -400,15 +414,8 @@ impl<S: Copy + PartialEq> SaveDialog<S> {
     /// Enter: the save, or what stands in its way.
     fn enter<T: SaveTarget<Scope = S>>(&mut self, t: &T) -> SaveKey<S> {
         let (stem, files) = self.files(t);
-        if stem.is_empty() || stem.ends_with('/') || Path::new(&stem).is_dir() {
-            self.say("type a file name");
-            return SaveKey::Open;
-        }
-        let parent = Path::new(&stem)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty());
-        if let Some(dir) = parent.filter(|d| !d.is_dir()) {
-            self.say(format!("no folder {}", dir.display()));
+        if let Some(problem) = name_problem(&stem) {
+            self.say(problem);
             return SaveKey::Open;
         }
         let (w, h) = self.px(t);
