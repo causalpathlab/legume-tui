@@ -31,6 +31,9 @@ testing = ["dep:tempfile", "dep:vt100"]
 # What the tools' map viewers share: colour, the page's theme, the
 # viewport between data and pixels, and the screen's chrome.
 map = []
+# A save dialog for a viewer's exports: what, how large, how fine and the
+# file name, with names that never replace a file unasked. ratatui only.
+save = []
 
 [dependencies]
 ratatui = "0.30"

@@ -577,6 +577,16 @@ Other wording may change.
   scale range, and `keep_inside` to stop panning past the data).
   `chrome::Chrome`: page, hint and menu styles from a theme, or the
   terminal's own with none, bordered popups, toasts and scrolled lists.
+- `save`: saving a figure, on ratatui alone. `save::Field`: a one-line
+  field whose suggested text starts selected, so typing replaces it and an
+  arrow keeps it to edit. `free_stem` numbers a name (`Numbering::Suffix`
+  `stem-2`, or `Counter` `stem-001`) past every file a save writes, and
+  `stem_of` drops a typed extension and expands `~`. `SaveDialog` asks
+  what to save, the page's width, the dpi and the name over a
+  `SaveTarget` the viewer implements; `key` gives `SaveKey::Save` with a
+  `SaveRequest` on enter, and a name whose files exist is replaced only
+  on a second enter, asked again whenever the name changes. Styles come
+  from a `look::Look` (the terminal's, or a `chrome::Chrome`).
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`

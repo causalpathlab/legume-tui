@@ -86,8 +86,12 @@ pub mod cli;
 pub mod graphics;
 #[cfg(feature = "logs")]
 pub mod logs;
+#[cfg(feature = "save")]
+pub mod look;
 #[cfg(feature = "map")]
 pub mod map;
+#[cfg(feature = "save")]
+pub mod save;
 #[cfg(all(feature = "testing", sessions))]
 pub mod testing;
 
