@@ -11,7 +11,10 @@
 //! deletes (`t=t`), so a full-screen frame costs a file write, not tens of
 //! MB of escape codes. Each file is made new under a random name, so a
 //! link planted in the shared temporary directory is never written
-//! through. Over ssh the terminal cannot read our files, so pixels are
+//! through. The terminal reads a file when it gets to the command, which
+//! may be frames later, so each image keeps its last two files and only
+//! older ones are removed; all go when the map is cleared or the [`Kitty`]
+//! dropped. Over ssh the terminal cannot read our files, so pixels are
 //! sent inline, zlib-compressed (`o=z`) and base64 encoded in 4 KB chunks. Every command carries `q=2` so kitty never answers into
 //! our input stream.
 //!
@@ -37,6 +40,7 @@ use base64::Engine;
 use cellart::Glyphs;
 use ratatui_image::picker::cap_parser::Parser;
 use ratatui_image::picker::ProtocolType;
+use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -45,6 +49,9 @@ const IDS: [u32; 2] = [0x7069_0001, 0x7069_0002];
 
 /// Base64 payload bytes per escape sequence (protocol limit is 4096).
 const CHUNK: usize = 4096;
+
+/// Files kept per image id for the terminal to read.
+const KEEP: usize = 2;
 
 /// Shows frames with kitty's graphics protocol, two images in turn.
 #[derive(Debug)]
@@ -56,8 +63,8 @@ pub struct Kitty {
     tool: String,
     /// Index into `IDS` of the image on screen.
     shown: Option<usize>,
-    /// The file each id's pixels last went through.
-    files: [Option<PathBuf>; 2],
+    /// The files each id's last [`KEEP`] frames went through, oldest first.
+    files: [VecDeque<PathBuf>; 2],
     /// Bytes written for the last frame.
     pub last_bytes: usize,
 }
@@ -70,7 +77,7 @@ impl Kitty {
             tmux: false,
             tool: "legume".into(),
             shown: None,
-            files: [None, None],
+            files: [VecDeque::new(), VecDeque::new()],
             last_bytes: 0,
         }
     }
@@ -205,6 +212,9 @@ impl Kitty {
         self.shown = None;
         out.flush()?;
         self.remove_files();
+        for files in &mut self.files {
+            files.clear();
+        }
         Ok(())
     }
 
@@ -217,13 +227,16 @@ impl Kitty {
         }
     }
 
-    /// Write `rgba` to a new file for `slot`'s image, in place of the one
-    /// it had. Kitty only deletes files whose name says they are for it.
-    /// The file is created new (`O_EXCL`) under a random name, so nothing
-    /// already at a name is followed or truncated.
+    /// Write `rgba` to a new file for `slot`'s image, removing the files
+    /// it had before its last [`KEEP`] − 1: the terminal may not yet have
+    /// read those. Kitty only deletes files whose name says they are for
+    /// it. The file is created new (`O_EXCL`) under a random name, so
+    /// nothing already at a name is followed or truncated.
     fn write_file(&mut self, slot: usize, rgba: &[u8]) -> io::Result<PathBuf> {
-        if let Some(old) = self.files[slot].take() {
-            let _ = std::fs::remove_file(old);
+        while self.files[slot].len() >= KEEP {
+            if let Some(old) = self.files[slot].pop_front() {
+                let _ = std::fs::remove_file(old);
+            }
         }
         let mut file = tempfile::Builder::new()
             .prefix(&format!("tty-graphics-protocol-{}-", self.tool))
@@ -231,8 +244,15 @@ impl Kitty {
             .tempfile_in(std::env::temp_dir())?;
         file.write_all(rgba)?;
         let (_, path) = file.keep().map_err(|e| e.error)?;
-        self.files[slot] = Some(path.clone());
+        self.files[slot].push_back(path.clone());
         Ok(path)
+    }
+}
+
+/// A Kitty replaced or abandoned on an error takes its files with it.
+impl Drop for Kitty {
+    fn drop(&mut self) {
+        self.remove_files();
     }
 }
 

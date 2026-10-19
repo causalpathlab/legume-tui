@@ -28,8 +28,10 @@
 //! to ([`Frame::to_image`], senna's table for a frame drawn from scratch)
 //! and back, so the cells start from the bytes kitty would be sent, and a
 //! frame made from bytes ([`Frame::from_srgba`]) reads as pinto's did.
+//! A renderer that has the bytes fits them as they are
+//! ([`Cells::fit_srgba`]), as pinto did, without a frame of them.
 
-use crate::map::colour::{encode, to_linear, Lin, Srgb};
+use crate::map::colour::{encode, linear, to_linear, Lin, Srgb};
 use crate::map::raster::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -141,7 +143,7 @@ fn symbol_glyphs() -> Vec<(char, u64)> {
 }
 
 /// A frame fitted to a block of character cells, row by row.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Cells {
     cols: usize,
     cells: Vec<(char, Srgb, Srgb)>,
@@ -152,8 +154,43 @@ impl Cells {
     /// pixels ([`Glyphs::pixels_per_cell`]); past the frame's edge reads as
     /// its background.
     #[must_use]
-    pub fn fit(
-        frame: &Frame,
+    pub fn fit(frame: &Frame, glyphs: Glyphs, ppc: (usize, usize), size: (usize, usize)) -> Self {
+        let px = frame.pixels();
+        let at = |x: usize, y: usize| to_linear(frame.to_srgb(px[y * frame.w + x]));
+        let bg = to_linear(frame.to_srgb(frame.background()));
+        Self::fit_with((frame.w, frame.h), at, bg, glyphs, ppc, size)
+    }
+
+    /// [`Cells::fit`] for `w × h` sRGBA bytes, `rgba`, on the page `bg`, as
+    /// a renderer writing bytes has them: each byte read as pinto read it,
+    /// with no frame of linear pixels made. Bytes past `w × h × 4` are
+    /// ignored; None when `rgba` holds fewer.
+    #[must_use]
+    pub fn fit_srgba(
+        (w, h): (usize, usize),
+        rgba: &[u8],
+        bg: Srgb,
+        glyphs: Glyphs,
+        ppc: (usize, usize),
+        size: (usize, usize),
+    ) -> Option<Self> {
+        let rgba = w
+            .checked_mul(h)
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| rgba.get(..n))?;
+        let at = |x: usize, y: usize| {
+            let o = (y * w + x) * 4;
+            [linear(rgba[o]), linear(rgba[o + 1]), linear(rgba[o + 2])]
+        };
+        Some(Self::fit_with((w, h), at, to_linear(bg), glyphs, ppc, size))
+    }
+
+    /// Fit a `w × h` image whose pixel `(x, y)` is `at(x, y)` in linear
+    /// light, `bg` past its edge.
+    fn fit_with(
+        wh: (usize, usize),
+        at: impl Fn(usize, usize) -> Lin + Sync,
+        bg: Lin,
         glyphs: Glyphs,
         ppc: (usize, usize),
         (cols, rows): (usize, usize),
@@ -161,7 +198,7 @@ impl Cells {
         let cells = (0..rows * cols)
             .into_par_iter()
             .map(|i| {
-                let px = sample(frame, glyphs, ppc, (i % cols, i / cols));
+                let px = sample(wh, &at, bg, glyphs, ppc, (i % cols, i / cols));
                 fit(&px, glyphs)
             })
             .collect();
@@ -189,17 +226,18 @@ fn rgb(c: Srgb) -> Color {
 }
 
 /// Glyph pixels of cell `(c, r)` in linear light, row-major: each the mean
-/// of the frame pixels it covers, as the frame's bytes decode. Outside the
-/// frame reads as background.
+/// of the `w × h` image's pixels it covers, `at(x, y)`. Outside the image
+/// reads as `bg`.
 fn sample(
-    frame: &Frame,
+    (w, h): (usize, usize),
+    at: &impl Fn(usize, usize) -> Lin,
+    bg: Lin,
     glyphs: Glyphs,
     (pw, ph): (usize, usize),
     (c, r): (usize, usize),
 ) -> Vec<Lin> {
     let (gw, gh) = glyphs.grid();
     let (x0, y0) = (c * pw, r * ph);
-    let (px, bg) = (frame.pixels(), frame.background());
     let mut out = Vec::with_capacity(gw * gh);
     for j in 0..gh {
         // Glyph rows split the cell's frame rows as evenly as integers allow.
@@ -210,11 +248,7 @@ fn sample(
             let mut n = 0f32;
             for y in rows.clone() {
                 for x in cols.clone() {
-                    let p = to_linear(frame.to_srgb(if x < frame.w && y < frame.h {
-                        px[y * frame.w + x]
-                    } else {
-                        bg
-                    }));
+                    let p = if x < w && y < h { at(x, y) } else { bg };
                     for ch in 0..3 {
                         sum[ch] += p[ch];
                     }
