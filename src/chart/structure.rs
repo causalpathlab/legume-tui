@@ -345,7 +345,9 @@ impl Drawn {
 ///
 /// For pinto's bytes, draw into a frame made by
 /// [`Frame::from_srgba`](crate::map::raster::Frame::from_srgba): its
-/// colours come back as the bytes they were.
+/// colours come back as the bytes they were. On an empty page,
+/// [`Frame::blank_exact`](crate::map::raster::Frame::blank_exact) gives
+/// the same bytes without a buffer to enter.
 pub fn bars<W: Copy + Into<f32>>(
     frame: &mut Frame,
     rect: [usize; 4],

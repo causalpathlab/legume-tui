@@ -55,6 +55,43 @@ fn a_frame_from_srgb_bytes_gives_every_byte_back() {
     assert_eq!(f.background(), [0.0; 3]);
 }
 
+/// A frame entered from `w × h` bytes all of the colour `c`.
+fn solid_srgba(w: usize, h: usize, c: Srgb) -> Frame {
+    let rgba: Vec<u8> = std::iter::repeat_n([c[0], c[1], c[2], 255], w * h)
+        .flatten()
+        .collect();
+    Frame::from_srgba(w, h, &rgba, c)
+}
+
+#[test]
+fn a_blank_exact_page_is_a_frame_entered_from_its_bytes() {
+    // A dark page senna's table would shift.
+    let dark = [3, 2, 1];
+    assert_ne!(encode_senna(linear(3)), 3);
+    let f = Frame::blank_exact(5, 4, dark);
+    let want = solid_srgba(5, 4, dark);
+    assert_eq!(f.background(), want.background());
+    assert_eq!(f.to_image().into_raw(), want.to_image().into_raw());
+    for p in f.to_image().pixels() {
+        assert_eq!(p.0, [3, 2, 1, 255]);
+    }
+    // Marks drawn on either give the same bytes.
+    let (mut a, mut b) = (f, want);
+    for g in [&mut a, &mut b] {
+        stamp(
+            g,
+            2.0,
+            2.0,
+            1.5,
+            Shape::Circle,
+            to_linear([200, 3, 90]),
+            0.6,
+        );
+        g.fill([0, 3, 2, 4], to_linear([1, 2, 3]));
+    }
+    assert_eq!(a.to_image().into_raw(), b.to_image().into_raw());
+}
+
 #[test]
 fn fill_is_clipped_to_the_frame() {
     let mut f = Frame::blank(4, 3, PAGE);

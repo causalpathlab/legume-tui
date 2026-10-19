@@ -384,6 +384,30 @@ fn bars_stack_from_the_bottom_in_palette_colours() {
 }
 
 #[test]
+fn bars_on_a_blank_exact_frame_give_a_pinto_frame_s_bytes() {
+    // Mixed columns blend, so the encoding shows in every byte.
+    let (p, l) = five(&[30, 100, 200, 3, 255]);
+    let palette = [to_linear([200, 3, 90]), to_linear([2, 1, 250])];
+    let style = BarStyle {
+        palette: &palette,
+        focus: None,
+        gap: GAP,
+        hits: false,
+    };
+    let w = Weights {
+        k: 2,
+        w: &p,
+        valid: None,
+    };
+    let theme = Theme::DARK;
+    let mut a = Frame::blank_exact(7, 9, theme.background);
+    let mut b = pinto_frame(7, 9, &theme);
+    bars(&mut a, [1, 1, 4, 8], &l, &w, &style);
+    bars(&mut b, [1, 1, 4, 8], &l, &w, &style);
+    assert_eq!(a.to_image().into_raw(), b.to_image().into_raw());
+}
+
+#[test]
 fn a_mixed_column_stacks_the_most_prevalent_at_the_bottom() {
     let (p, l) = five(&[64, 64, 64, 64, 64]);
     assert_eq!(l.stack, [1, 0]);

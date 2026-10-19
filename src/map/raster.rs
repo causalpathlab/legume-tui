@@ -8,6 +8,8 @@
 //! constant, and the order of every float operation is senna's, so senna
 //! keeps its pixels. [`Frame::from_srgba`] is where a renderer writing
 //! sRGB bytes (pinto's) enters; such a frame gives every byte back.
+//! [`Frame::blank_exact`] is the same encoding on an empty page, for such a
+//! renderer drawing from scratch.
 
 use super::colour::{encode_senna, to_linear, to_srgb, Lin, Srgb};
 use super::text::TextRun;
@@ -29,10 +31,11 @@ pub trait Canvas {
 /// How a frame turns linear light into bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Encoding {
-    /// senna's table, for frames drawn from scratch.
+    /// senna's table, for [`Frame::blank`] and the frames point jobs
+    /// hand over.
     Senna,
     /// The table every byte comes back through, for frames entered from
-    /// bytes.
+    /// bytes ([`Frame::from_srgba`]) and [`Frame::blank_exact`].
     Exact,
 }
 
@@ -50,11 +53,25 @@ pub struct Frame {
 
 impl Frame {
     /// A `w × h` page in the colour `bg`, for points or a chart drawn
-    /// from scratch.
+    /// from scratch. It encodes through senna's table, as a point job's
+    /// frame does, so senna keeps its pixels; that table shifts a few dark
+    /// bytes, which [`Frame::blank_exact`] does not.
     #[must_use]
     pub fn blank(w: usize, h: usize, bg: Srgb) -> Self {
         let bg = to_linear(bg);
         Self::from_canvas(w, h, vec![bg; w * h], bg)
+    }
+
+    /// A `w × h` page in the colour `bg` that encodes as a frame from
+    /// [`Frame::from_srgba`] does: the same bytes as one entered from a
+    /// buffer of `bg`, with no buffer to build, and the same bytes for
+    /// whatever is drawn on it.
+    #[must_use]
+    pub fn blank_exact(w: usize, h: usize, bg: Srgb) -> Self {
+        Self {
+            encoding: Encoding::Exact,
+            ..Self::blank(w, h, bg)
+        }
     }
 
     /// A frame holding the `w × h` sRGBA bytes `rgba` (alpha ignored) on
