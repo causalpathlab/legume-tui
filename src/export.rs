@@ -13,7 +13,7 @@
 //! flags of `--pdf` from `src/view/mod.rs` ([`PageSize::px`] its single
 //! map's page, [`PageSize::grid_px`] its grid's).
 
-use crate::map::colour::{to_linear, to_srgb_senna, Lin};
+use crate::map::colour::{to_linear, to_srgb_senna, Lin, Srgb};
 use crate::map::raster::Frame;
 use crate::map::text::{self, Font, TextRun};
 use crate::map::theme::Theme;
@@ -32,6 +32,29 @@ use font::{helvetica_width, win_ansi};
 pub struct Page {
     pub img: RgbaImage,
     pub text: Vec<TextRun>,
+}
+
+impl Page {
+    /// A `w × h` page drawn by `f`: a blank frame in `bg` that keeps its
+    /// text, handed to `f` with the regular and bold fonts for `cell_px`;
+    /// its pixels and text become the page, beside what `f` returned.
+    pub fn draw<T>(
+        (w, h): (usize, usize),
+        bg: Srgb,
+        cell_px: f32,
+        f: impl FnOnce(&mut Frame, Font, Font) -> T,
+    ) -> (Self, T) {
+        let mut frame = Frame::blank(w, h, bg);
+        frame.keep_text();
+        let out = f(
+            &mut frame,
+            Font::for_cell_height(cell_px, false),
+            Font::for_cell_height(cell_px, true),
+        );
+        let img = frame.to_image();
+        let text = frame.take_text();
+        (Self { img, text }, out)
+    }
 }
 
 /// Pixels past which a picture is refused (its canvas is 12 bytes a pixel).

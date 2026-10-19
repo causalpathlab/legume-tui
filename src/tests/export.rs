@@ -437,3 +437,37 @@ fn pdf_args_are_sennas_flags_and_defaults() {
         }
     );
 }
+
+#[test]
+fn a_page_drawn_is_the_steps_by_hand() {
+    let theme = Theme::PAPER;
+    let ink = to_linear(theme.text);
+    let paint = |f: &mut Frame, font: Font, bold: Font| {
+        let bg = f.background();
+        f.fill([2, 3, 20, 9], [0.2, 0.4, 0.6]);
+        text::draw(f, font, "plain", 4, 10, ink, bg);
+        text::draw(f, bold, "bold", 4, 40, ink, bg);
+        (f.w, f.h)
+    };
+    let (page, got) = Page::draw((64, 80), PAGE, 20.0, paint);
+    assert_eq!(got, (64, 80));
+
+    let mut f = Frame::blank(64, 80, PAGE);
+    f.keep_text();
+    paint(
+        &mut f,
+        Font::for_cell_height(20.0, false),
+        Font::for_cell_height(20.0, true),
+    );
+    let img = f.to_image();
+    let text = f.take_text();
+    assert_eq!(page.img, img);
+    let key = |t: &[TextRun]| -> Vec<(String, f32, f32, f32, f32, bool)> {
+        t.iter()
+            .map(|r| (r.text.clone(), r.x, r.y, r.w, r.line, r.bold))
+            .collect()
+    };
+    assert_eq!(key(&page.text), key(&text));
+    assert!(key(&page.text)[1].5);
+    assert_eq!(page.text[0].line, 20.0);
+}

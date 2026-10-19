@@ -84,6 +84,15 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.9
+
+- Charts say how large a page they need: `chart::heatmap::heat_size`
+  and `chart::structure::figure_size`, from the same layout the drawing
+  uses, so a page of that size clips no label. `export::Page::draw`
+  draws such a page in one call.
+- A heatmap's key widens for a clip whose labels are longer than
+  `+2.5`; they ran past the frame before.
+
 ## 0.3.5
 
 0.3.4 was not published: its changes (below) ship in this release.
@@ -615,7 +624,8 @@ Other wording may change.
   in the `shape` that keeps tiles largest. `PageSize` is a width in
   inches and a dpi (`WIDTHS_IN`, `DPIS` offered), its pixels for an
   aspect, the cell height text is sized for, and `check` against
-  `MAX_PIXELS`. With `clap`, `PdfArgs` adds `--pdf`, `--width` (7 in)
+  `MAX_PIXELS`. `Page::draw` draws a page into a blank frame that keeps
+  its text, with the fonts for a cell height. With `clap`, `PdfArgs` adds `--pdf`, `--width` (7 in)
   and `--dpi` (300).
 - `map-kitty`: pinto's own ways of putting a map on screen.
   `map::kitty::Kitty::new(transport).through_tmux(on).named(tool)` shows a
@@ -638,12 +648,14 @@ Other wording may change.
   as their rows (`widths`), and `Drawn::at` finds the panel and component
   under a pixel. `figure` draws them in senna's panel widths
   (`senna_widths`) with its title, panel names (turned when one is too
-  wide) and key; `name_rows` sets panel names in terminal
+  wide) and key, and `figure_size` is the height it needs at a width for
+  all of them; `name_rows` sets panel names in terminal
   rows. `chart::heatmap::by_margin` takes each group's top features by
   their lead over the next group (by level with one group), `candidates`
   and `top_by_margin` choose in two stages, `zscore_rows` scales rows,
   and `draw_heat` draws senna's heatmap with its ramp key (`HeatLayout::at`
-  for clicks); `thumbnail` and `tsv` are pinto's. `chart::note` and
+  for clicks), and `heat_size` the least frame in which it shows every
+  row and column name and the key; `thumbnail` and `tsv` are pinto's. `chart::note` and
   `chart::step_top` serve both; `map::colour::diverging_lin` is the
   heatmap colour in linear light.
 - `save`: saving a figure, on ratatui alone. `save::Field`: a one-line
