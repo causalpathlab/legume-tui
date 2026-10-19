@@ -665,6 +665,59 @@ fn kill_wakes_a_screen_waiting_long_for_a_key() {
     assert!(dir.is_empty());
 }
 
+/// A stand-in host for session `name` in `dir` that takes one watch and
+/// answers it `delay` after it came, attached; when it answered, then the
+/// connection, held open by the caller as a host holds its watchers.
+fn late_host(
+    dir: &Private,
+    name: &str,
+    delay: Duration,
+) -> std::thread::JoinHandle<(Instant, std::os::unix::net::UnixStream)> {
+    use std::io::Read;
+    let listener =
+        std::os::unix::net::UnixListener::bind(dir.path().join(format!("{name}.sock"))).unwrap();
+    std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().unwrap();
+        // A frame: its tag (a watch), then an empty body's length.
+        let mut head = [0u8; 5];
+        conn.read_exact(&mut head).unwrap();
+        assert_eq!(head, [7, 0, 0, 0, 0], "a watch");
+        std::thread::sleep(delay);
+        conn.write_all(b"A").unwrap();
+        (Instant::now(), conn)
+    })
+}
+
+/// A screen started inside a session whose host says it is attached only
+/// `delay` after the screen asked, while the screen's first round waits a
+/// minute for a key: it must still repaint and draw soon after the word.
+fn a_late_first_word_is_heard(delay: Duration) {
+    let dir = private();
+    let host = late_host(&dir, "demo-host-1", delay);
+    let mut t = dir.term(&["idle"], &[(legume_tui::SESSION_VAR, "demo-host-1")]);
+    let (said, _conn) = host.join().unwrap();
+    t.wait_for("idle-repaint-1");
+    assert!(
+        said.elapsed() < Duration::from_secs(2),
+        "drawn {:?} after the host said attached",
+        said.elapsed()
+    );
+    t.type_(b"q");
+    t.wait_for("idle done after 1 repaints");
+    assert_eq!(t.exit_code(), 0);
+    assert!(t.cooked());
+}
+
+#[test]
+fn a_nested_screen_hears_a_host_that_answers_late() {
+    a_late_first_word_is_heard(Duration::from_millis(300));
+}
+
+#[test]
+fn a_nested_screen_hears_a_host_that_answers_later_than_it_waits() {
+    a_late_first_word_is_heard(Duration::from_millis(1500));
+}
+
 #[test]
 fn kill_reaches_a_child_run_before_the_screen_then_ends_the_program() {
     let dir = private();

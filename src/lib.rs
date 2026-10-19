@@ -163,8 +163,13 @@ const ASK_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long a launching client waits for its host's socket.
 #[cfg(sessions)]
 const LAUNCH: Duration = Duration::from_secs(5);
-/// The shortest wait of [`Session::poll`] while detached.
+/// The shortest wait of [`Session::poll`] while detached, and the longest
+/// while the host is yet to say whether a terminal is attached.
 const DETACHED_POLL: Duration = Duration::from_secs(1);
+/// How long a TUI started inside a session waits for its host to say
+/// whether a terminal is attached, as it starts.
+#[cfg(sessions)]
+const FIRST_WORD: Duration = Duration::from_secs(1);
 
 /// How a TUI wants its session.
 #[derive(Clone, Debug, Default)]
@@ -535,16 +540,28 @@ struct Control {
     fd: OwnedFd,
     attached: AtomicBool,
     repaint: AtomicBool,
+    /// Whether the host has said how things stand: from the start for
+    /// the control channel (until a word comes, nobody is attached), from
+    /// its first word (or its end) for a watch, which the host answers
+    /// with the state now.
+    told: AtomicBool,
 }
 
 #[cfg(sessions)]
 impl Control {
-    fn new(fd: OwnedFd) -> Arc<Self> {
+    fn new(fd: OwnedFd, told: bool) -> Arc<Self> {
         Arc::new(Self {
             fd,
             attached: AtomicBool::new(false),
             repaint: AtomicBool::new(false),
+            told: AtomicBool::new(told),
         })
+    }
+
+    /// Whether the host is yet to say how things stand: a round's wait is
+    /// kept short meanwhile, as its first word wakes nothing.
+    fn untold(&self) -> bool {
+        !self.told.load(SeqCst)
     }
 
     /// Read what the host said since last time.
@@ -555,6 +572,7 @@ impl Control {
                 Ok(0) => {
                     // The host is gone: nobody will attach again.
                     self.attached.store(false, SeqCst);
+                    self.told.store(true, SeqCst);
                     return;
                 }
                 Ok(n) => self.heard(&buf[..n]),
@@ -577,6 +595,9 @@ impl Control {
     }
 
     fn heard(&self, said: &[u8]) {
+        if !said.is_empty() {
+            self.told.store(true, SeqCst);
+        }
         for &b in said {
             match b {
                 host::ATTACHED => {
@@ -619,7 +640,7 @@ fn control() -> Option<Arc<Control>> {
         .get_or_init(|| {
             let fd = inherited_fd(CONTROL_VAR, rustix::fs::FileType::Fifo)?;
             rustix::io::ioctl_fionbio(&fd, true).ok()?;
-            Some(Control::new(fd))
+            Some(Control::new(fd, true))
         })
         .clone()
 }
@@ -627,11 +648,23 @@ fn control() -> Option<Arc<Control>> {
 /// A watch on the host of the session named in the environment, for a
 /// TUI a hosted program started on the same terminal; taken once per
 /// process. None if there is no such host, or our terminal is not its.
+///
+/// The host answers a watch with the state now, from a thread of its own.
+/// That word is waited for here, up to [`FIRST_WORD`], so the first round
+/// knows whether to draw: a round's wait watches only the terminal, and a
+/// word that comes during it wakes nothing. A word later than that is
+/// heard within [`DETACHED_POLL`], as rounds wait no longer until it
+/// comes ([`Control::untold`]). The words after it need no wake of their
+/// own: an attach comes with SIGWINCH to the terminal's foreground, which
+/// is this TUI on the host's terminal, and a detach drops what is drawn
+/// until the next round hears it. A TUI on another terminal draws there,
+/// whatever the host's state.
 #[cfg(sessions)]
 fn watch() -> Option<Arc<Control>> {
     static WATCH: OnceLock<Option<Arc<Control>>> = OnceLock::new();
     WATCH
         .get_or_init(|| {
+            use std::io::Read;
             if !rustix::termios::isatty(io::stdout()) {
                 return None;
             }
@@ -640,8 +673,22 @@ fn watch() -> Option<Arc<Control>> {
             let path = dir::socket(&dir::runtime_dir().ok()?, &name);
             let sock = wire::connect(path).ok()?;
             wire::write_frame(&sock, wire::WATCH, &[]).ok()?;
+            // None if it did not come in time: rounds wait short till then.
+            let mut word = [0u8; 1];
+            let mut first = None;
+            if wire::set_timeout(&sock, true, Some(FIRST_WORD)).is_ok() {
+                first = loop {
+                    match (&sock).read(&mut word) {
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        read => break read.ok(),
+                    }
+                };
+            }
             sock.set_nonblocking(true).ok()?;
-            Some(Control::new(sock.into()))
+            let control = Control::new(sock.into(), first.is_some());
+            // Nothing read (the host gone) leaves nobody attached.
+            control.heard(&word[..first.unwrap_or(0)]);
+            Some(control)
         })
         .clone()
 }
@@ -1170,6 +1217,12 @@ impl Session {
         self.inner.owed.store(true, SeqCst);
     }
 
+    /// Whether the host of a TUI started inside a session is yet to say
+    /// whether a terminal is attached ([`watch`]).
+    fn untold(&self) -> bool {
+        self.inner.control.as_ref().is_some_and(|c| c.untold())
+    }
+
     /// Whether a terminal is there to draw on. While detached, skip
     /// drawing (output is dropped) and do not read the terminal's size;
     /// keep the program's own work going at a slow poll. Always true when
@@ -1341,6 +1394,9 @@ impl Session {
         }
         let wait = if self.attached() {
             wanted
+        } else if self.untold() {
+            // Its first word would not wake the wait.
+            DETACHED_POLL
         } else {
             wanted.max(DETACHED_POLL)
         };

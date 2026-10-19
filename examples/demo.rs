@@ -97,6 +97,11 @@ fn main() -> std::io::Result<()> {
         Some("stall") => {
             let session = TOOL.session("stall", &Options::default())?;
             let mut terminal = session.terminal()?;
+            // Drawn once, when a terminal is there to draw on: a draw
+            // before the client is ready is dropped.
+            while !session.attached() && !session.stop_requested() {
+                std::thread::sleep(Duration::from_millis(50));
+            }
             session.draw(&mut terminal, |f| {
                 f.render_widget(Paragraph::new("demo-stall-stalled"), f.area())
             })?;

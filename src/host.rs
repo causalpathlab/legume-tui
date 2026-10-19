@@ -14,7 +14,8 @@
 //! the client said of its terminal's environment is written beside the
 //! socket first ([`crate::Session::terminal_env`]). A TUI
 //! the program starts on the same terminal hears the same over a
-//! [`wire::WATCH`] connection.
+//! [`wire::WATCH`] connection, the state now first, sent from the
+//! connection's own thread: the TUI may be running before it comes.
 //!
 //! No lock is held across a write to a client or to the pty: each client
 //! has a writer thread with a bounded queue, the pty's input has its own,
