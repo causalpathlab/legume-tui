@@ -7,6 +7,7 @@
 
 pub mod colour;
 pub mod legend;
+pub mod offsets;
 pub mod points;
 pub mod raster;
 pub mod text;
