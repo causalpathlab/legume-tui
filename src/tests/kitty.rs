@@ -110,14 +110,14 @@ fn a_file_frame_is_named_for_its_tool_and_removed_when_cleared() {
     let mut out = Vec::new();
     k.show(&mut out, &f, (1, 1), (2, 1)).unwrap();
 
-    let path = std::env::temp_dir().join(format!(
-        "tty-graphics-protocol-lt6-test-{}-0.rgba",
-        std::process::id()
-    ));
-    assert_eq!(std::fs::read(&path).unwrap(), f.to_image().into_raw());
     let (keys, named) = decode_inline(&out);
     assert!(keys.contains("t=t") && keys.contains("q=2"));
-    assert_eq!(named, path.to_string_lossy().as_bytes());
+    let path = PathBuf::from(String::from_utf8(named).unwrap());
+    assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with("tty-graphics-protocol-lt6-test-"));
+    assert!(name.ends_with(".rgba"));
+    assert_eq!(std::fs::read(&path).unwrap(), f.to_image().into_raw());
     assert_eq!(k.last_bytes, 3 * 2 * 4);
 
     let mut out = Vec::new();
@@ -127,6 +127,54 @@ fn a_file_frame_is_named_for_its_tool_and_removed_when_cleared() {
         assert!(text.contains(&format!("a=d,d=I,i={id},q=2")));
     }
     assert!(!path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_frame_does_not_write_through_a_planted_link() {
+    // Links at the names a frame's file could be guessed to have, pointing
+    // at a file of the user's: showing frames must leave it alone.
+    let dir = tempfile::tempdir().unwrap();
+    let precious = dir.path().join("precious");
+    std::fs::write(&precious, b"precious").unwrap();
+    let tool = format!("lt6-link-{}", std::process::id());
+    let planted: Vec<PathBuf> = (0..2)
+        .map(|slot| {
+            std::env::temp_dir().join(format!(
+                "tty-graphics-protocol-{tool}-{}-{slot}.rgba",
+                std::process::id()
+            ))
+        })
+        .collect();
+    for link in &planted {
+        let _ = std::fs::remove_file(link);
+        std::os::unix::fs::symlink(&precious, link).unwrap();
+    }
+
+    let mut k = Kitty::new(Transport::File).named(&tool);
+    for _ in 0..2 {
+        k.show_rgba(&mut Vec::new(), (1, 1), &[1, 2, 3, 4], (0, 0), (1, 1))
+            .unwrap();
+    }
+    k.clear(&mut Vec::new()).unwrap();
+    for link in &planted {
+        let _ = std::fs::remove_file(link);
+    }
+    assert_eq!(std::fs::read(&precious).unwrap(), b"precious");
+}
+
+#[test]
+fn too_few_bytes_for_the_frame_are_an_error() {
+    for transport in [Transport::Inline, Transport::File] {
+        let mut k = Kitty::new(transport);
+        let mut out = Vec::new();
+        let err = k
+            .show_rgba(&mut out, (4, 4), &[0u8; 8], (0, 0), (1, 1))
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(out.is_empty());
+        assert_eq!(k.last_bytes, 0);
+    }
 }
 
 #[test]

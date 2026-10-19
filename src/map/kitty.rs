@@ -9,9 +9,10 @@
 //!
 //! Locally the pixels travel through a temporary file that kitty reads and
 //! deletes (`t=t`), so a full-screen frame costs a file write, not tens of
-//! MB of escape codes. Over ssh the terminal cannot read our files, so
-//! pixels are sent inline, zlib-compressed (`o=z`) and base64 encoded in
-//! 4 KB chunks. Every command carries `q=2` so kitty never answers into
+//! MB of escape codes. Each file is made new under a random name, so a
+//! link planted in the shared temporary directory is never written
+//! through. Over ssh the terminal cannot read our files, so pixels are
+//! sent inline, zlib-compressed (`o=z`) and base64 encoded in 4 KB chunks. Every command carries `q=2` so kitty never answers into
 //! our input stream.
 //!
 //! Inside tmux, each command is framed for tmux's passthrough
@@ -23,8 +24,9 @@
 //! Ported from pinto: `Kitty` from `src/view/kitty.rs` and `Graphics`
 //! from `src/view/mod.rs` (here [`MapGraphics`]). The frame is a
 //! [`Frame`] (pinto's bytes enter through [`Frame::from_srgba`] and come
-//! back unchanged), errors are `io::Error`s, and the temporary file is
-//! named for the tool ([`Kitty::named`]).
+//! back unchanged), errors are `io::Error`s, the temporary file is
+//! named for the tool ([`Kitty::named`]) and made new for each frame
+//! rather than at a fixed name, and too few bytes are an error.
 
 pub mod cellart;
 
@@ -54,6 +56,8 @@ pub struct Kitty {
     tool: String,
     /// Index into `IDS` of the image on screen.
     shown: Option<usize>,
+    /// The file each id's pixels last went through.
+    files: [Option<PathBuf>; 2],
     /// Bytes written for the last frame.
     pub last_bytes: usize,
 }
@@ -66,6 +70,7 @@ impl Kitty {
             tmux: false,
             tool: "legume".into(),
             shown: None,
+            files: [None, None],
             last_bytes: 0,
         }
     }
@@ -89,7 +94,7 @@ impl Kitty {
     }
 
     /// Name the temporary files for `tool` (`legume` by default):
-    /// `tty-graphics-protocol-{tool}-{pid}-{slot}.rgba`.
+    /// `tty-graphics-protocol-{tool}-{random}.rgba`.
     #[must_use]
     pub fn named(mut self, tool: &str) -> Self {
         self.tool = tool.into();
@@ -123,6 +128,10 @@ impl Kitty {
 
     /// [`Kitty::show`] for `w × h` sRGBA bytes, `rgba`, as a renderer
     /// writing bytes has them.
+    ///
+    /// # Errors
+    /// `InvalidInput` when `rgba` holds fewer than `w × h × 4` bytes, and
+    /// any error writing the file or the commands.
     pub fn show_rgba(
         &mut self,
         out: &mut impl Write,
@@ -131,7 +140,19 @@ impl Kitty {
         (col, row): (u16, u16),
         (cols, rows): (u16, u16),
     ) -> io::Result<()> {
-        let rgba = &rgba[..w * h * 4];
+        let Some(rgba) = w
+            .checked_mul(h)
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| rgba.get(..n))
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{w} × {h} frame needs {w} × {h} × 4 bytes, got {}",
+                    rgba.len()
+                ),
+            ));
+        };
         let slot = self.shown.map_or(0, |s| 1 - s);
         let id = IDS[slot];
         // 1-based cursor position; kitty places the image at the cursor.
@@ -160,8 +181,7 @@ impl Kitty {
             }
             // Through a temporary file: the terminal shares our files.
             _ => {
-                let path = self.temp_path(slot);
-                std::fs::write(&path, rgba)?;
+                let path = self.write_file(slot, rgba)?;
                 let payload = B64.encode(path.to_string_lossy().as_bytes());
                 self.command(out, &[format!("{keys},t=t;{payload}").as_bytes()])?;
                 rgba.len()
@@ -192,18 +212,27 @@ impl Kitty {
     /// read; one it never read (a terminal that ignored the command, or
     /// none attached to read it) would otherwise stay behind.
     pub fn remove_files(&self) {
-        for slot in 0..IDS.len() {
-            let _ = std::fs::remove_file(self.temp_path(slot));
+        for path in self.files.iter().flatten() {
+            let _ = std::fs::remove_file(path);
         }
     }
 
-    /// Kitty only deletes files whose name says they are for it.
-    fn temp_path(&self, slot: usize) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "tty-graphics-protocol-{}-{}-{slot}.rgba",
-            self.tool,
-            std::process::id()
-        ))
+    /// Write `rgba` to a new file for `slot`'s image, in place of the one
+    /// it had. Kitty only deletes files whose name says they are for it.
+    /// The file is created new (`O_EXCL`) under a random name, so nothing
+    /// already at a name is followed or truncated.
+    fn write_file(&mut self, slot: usize, rgba: &[u8]) -> io::Result<PathBuf> {
+        if let Some(old) = self.files[slot].take() {
+            let _ = std::fs::remove_file(old);
+        }
+        let mut file = tempfile::Builder::new()
+            .prefix(&format!("tty-graphics-protocol-{}-", self.tool))
+            .suffix(".rgba")
+            .tempfile_in(std::env::temp_dir())?;
+        file.write_all(rgba)?;
+        let (_, path) = file.keep().map_err(|e| e.error)?;
+        self.files[slot] = Some(path.clone());
+        Ok(path)
     }
 }
 
