@@ -129,6 +129,46 @@ fn a_file_frame_is_named_for_its_tool_and_removed_when_cleared() {
     assert!(!path.exists());
 }
 
+/// The file a file-transport frame's command names.
+fn named_file(out: &[u8]) -> PathBuf {
+    let (_, named) = decode_inline(out);
+    PathBuf::from(String::from_utf8(named).unwrap())
+}
+
+#[test]
+fn file_frames_are_removed_when_the_kitty_is_dropped() {
+    let mut k = Kitty::new(Transport::File).named("lt6-drop");
+    let paths: Vec<PathBuf> = (0..2)
+        .map(|_| {
+            let mut out = Vec::new();
+            k.show(&mut out, &frame(2, 2), (0, 0), (1, 1)).unwrap();
+            named_file(&out)
+        })
+        .collect();
+    assert!(paths.iter().all(|p| p.exists()));
+    drop(k);
+    assert!(paths.iter().all(|p| !p.exists()));
+}
+
+#[test]
+fn each_image_keeps_its_last_two_files_for_the_terminal_to_read() {
+    // Six frames alternate the two ids: the terminal may not yet have read
+    // the files of the last two frames of each, so those stay; older go.
+    let mut k = Kitty::new(Transport::File).named("lt6-queue");
+    let paths: Vec<PathBuf> = (0..6)
+        .map(|_| {
+            let mut out = Vec::new();
+            k.show(&mut out, &frame(2, 2), (0, 0), (1, 1)).unwrap();
+            named_file(&out)
+        })
+        .collect();
+    for (i, path) in paths.iter().enumerate() {
+        assert_eq!(path.exists(), i >= 2, "frame {i}");
+    }
+    k.clear(&mut Vec::new()).unwrap();
+    assert!(paths.iter().all(|p| !p.exists()));
+}
+
 #[cfg(unix)]
 #[test]
 fn a_file_frame_does_not_write_through_a_planted_link() {
