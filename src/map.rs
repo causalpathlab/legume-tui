@@ -3,3 +3,4 @@
 //! between data and pixels ([`viewport`]).
 
 pub mod colour;
+pub mod theme;
