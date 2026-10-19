@@ -98,6 +98,19 @@ fn a_rank_keeps_the_shuffled_order_within_it() {
 }
 
 #[test]
+fn many_equal_levels_keep_the_shuffled_order() {
+    // Enough points that an unstable sort would reorder the ties.
+    let n = 500u32;
+    let shuffled: Vec<u32> = (0..n).map(|i| (i * 211 + 7) % n).collect();
+    let t: Vec<f32> = (0..n).map(|i| (i % 3) as f32).collect();
+    let order = by_level(&shuffled, |i| t[i]);
+    let want: Vec<u32> = (0..3)
+        .flat_map(|l| shuffled.iter().copied().filter(move |&i| i % 3 == l))
+        .collect();
+    assert_eq!(order, want);
+}
+
+#[test]
 fn the_radius_shrinks_with_crowding_within_bounds() {
     let vp = Viewport::fit([0.0, 0.0, 1.0, 1.0], 100, 100, 0.92, YAxis::Up);
     assert_eq!(auto_radius(0, &vp), 2.4);
