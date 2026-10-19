@@ -181,7 +181,8 @@ fn without_counts_the_model_chooses() {
 #[test]
 fn a_single_group_shows_its_top_levels() {
     // With one column there is no runner-up: rows rank by their level,
-    // and those at or below zero, or missing, are left out.
+    // whatever its sign (log levels are all below zero); missing ones are
+    // left out.
     let v = [0.5, 2.0, 0.0, -1.0, f32::NAN, 1.0];
     let m = Matrix {
         rows: 6,
@@ -189,9 +190,18 @@ fn a_single_group_shows_its_top_levels() {
         v: &v,
     };
     assert_eq!(peak_margin(&m, 1), Some((0, 2.0)));
-    assert_eq!(peak_margin(&m, 2), None);
+    assert_eq!(peak_margin(&m, 3), Some((0, -1.0)));
+    assert_eq!(peak_margin(&m, 4), None);
     assert_eq!(by_margin(&m, 2), [(1, 0), (5, 0)]);
-    assert_eq!(by_margin(&m, 10), [(1, 0), (5, 0), (0, 0)]);
+    assert_eq!(by_margin(&m, 10), [(1, 0), (5, 0), (0, 0), (2, 0), (3, 0)]);
+    // Levels all below zero still give their top rows.
+    let logs = [-3.0, -0.5, -2.0];
+    let m = Matrix {
+        rows: 3,
+        cols: 1,
+        v: &logs,
+    };
+    assert_eq!(by_margin(&m, 2), [(1, 0), (2, 0)]);
     // No columns: nothing peaks.
     let none = Matrix {
         rows: 2,

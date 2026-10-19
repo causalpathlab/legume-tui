@@ -108,7 +108,8 @@ impl<F: Fn(usize, usize) -> f32> Levels for ByFn<F> {
 /// Row `r`'s peak column and its lead over the runner-up, kept only when
 /// it is a number above zero: a tie, a row with fewer than two levels
 /// among two or more columns, or no level at all peaks nowhere. Missing
-/// levels never win. With one column the lead is the level itself.
+/// levels never win. With one column there is no runner-up: the lead is
+/// the level itself, of any sign (log levels are all below zero).
 #[must_use]
 pub fn peak_margin<L: Levels + ?Sized>(m: &L, r: usize) -> Option<(usize, f32)> {
     let cols = m.cols();
@@ -121,7 +122,10 @@ pub fn peak_margin<L: Levels + ?Sized>(m: &L, r: usize) -> Option<(usize, f32)> 
             second = v;
         }
     }
-    let margin = if cols > 1 { first - second } else { first };
+    if cols == 1 {
+        return first.is_finite().then_some((top, first));
+    }
+    let margin = first - second;
     (margin > 0. && margin.is_finite()).then_some((top, margin))
 }
 
