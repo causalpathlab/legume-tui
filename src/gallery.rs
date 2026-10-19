@@ -123,15 +123,17 @@ pub struct FileRecord {
 }
 
 impl FileRecord {
-    /// The file at `path` as it is now.
+    /// The file at `path` as it is now; its contents are read, a piece
+    /// at a time, only to hash them.
     pub fn of(path: &Path) -> io::Result<Self> {
-        let bytes = std::fs::read(path)
-            .map_err(|e| io::Error::new(e.kind(), format!("reading {}: {e}", path.display())))?;
+        let reading =
+            |e: io::Error| io::Error::new(e.kind(), format!("reading {}: {e}", path.display()));
+        let m = std::fs::metadata(path).map_err(reading)?;
         Ok(Self {
             path: absolute(path),
-            size: bytes.len() as u64,
-            mtime: std::fs::metadata(path).map_or(0, |m| mtime_of(&m)),
-            hash: hash(&bytes),
+            size: m.len(),
+            mtime: mtime_of(&m),
+            hash: hash(path).map_err(reading)?,
         })
     }
 
@@ -149,20 +151,33 @@ impl FileRecord {
     }
 }
 
-/// The SHA-256 of `bytes` in hex.
+/// The SHA-256 of the file at `path` in hex, read a piece at a time.
 #[cfg(feature = "gallery-trace")]
-fn hash(bytes: &[u8]) -> String {
+fn hash(path: &Path) -> io::Result<String> {
     use sha2::{Digest, Sha256};
-    Sha256::digest(bytes)
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0; 1 << 16];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(hasher
+        .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect()
+        .collect())
 }
 
-/// No hash without feature `gallery-trace`.
+/// No hash, and nothing read, without feature `gallery-trace`.
 #[cfg(not(feature = "gallery-trace"))]
-fn hash(_: &[u8]) -> String {
-    String::new()
+fn hash(_: &Path) -> io::Result<String> {
+    Ok(String::new())
 }
 
 /// One save.

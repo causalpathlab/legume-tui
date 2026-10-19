@@ -189,3 +189,17 @@ fn a_log_that_is_a_link_moves_and_deletes_nothing() {
     assert!(g.remove(&files[1], true).is_err());
     assert!(files.iter().all(|f| f.is_file()));
 }
+
+#[test]
+fn a_file_is_recorded_with_its_size_and_sha256() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("abc.txt");
+    std::fs::write(&f, "abc").unwrap();
+    let r = FileRecord::of(&f).unwrap();
+    assert_eq!(r.size, 3);
+    assert_eq!(
+        r.hash,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert!(FileRecord::of(&tmp.path().join("gone")).is_err());
+}
