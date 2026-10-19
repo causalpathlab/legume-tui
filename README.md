@@ -86,7 +86,7 @@ legume-tui = "0.3"
 
 ## 0.3.13
 
-- A heatmap of one group ranks its rows by their level whatever its sign; levels below zero (logs) were left out, so such a heatmap came up empty.
+- A heatmap of one group ranks its rows by their level whatever its sign; levels below zero (logs) were left out, so such a heatmap came up empty. `Levels::floor` (and the `Above` wrapper) leaves out rows at or below a floor, for data where zero says nothing.
 
 ## 0.3.12
 

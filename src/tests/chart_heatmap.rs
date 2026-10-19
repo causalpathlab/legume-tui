@@ -771,3 +771,31 @@ fn heat_size_of_many_rows_is_quick() {
     assert!(took.as_millis() < 1000, "{took:?}");
     assert!(h >= rows.len() * font.line_height(), "{h}");
 }
+
+#[test]
+fn a_floor_leaves_out_a_single_group_s_rows_at_or_below_it() {
+    let v = [0.5, 2.0, 0.0, -1.0, f32::NAN, 1.0];
+    let m = Above {
+        levels: Matrix {
+            rows: 6,
+            cols: 1,
+            v: &v,
+        },
+        floor: 0.0,
+    };
+    assert_eq!(peak_margin(&m, 2), None, "at the floor");
+    assert_eq!(by_margin(&m, 10), [(1, 0), (5, 0), (0, 0)]);
+    assert_eq!(candidates(&m, 2), candidates(&m, 2));
+    // With two or more columns a lead must be above zero anyway.
+    let two = [1.0, 0.0, 0.0, 3.0];
+    let wide = Matrix {
+        rows: 2,
+        cols: 2,
+        v: &two,
+    };
+    let floored = Above {
+        levels: wide,
+        floor: 0.0,
+    };
+    assert_eq!(by_margin(&floored, 5), by_margin(&wide, 5));
+}

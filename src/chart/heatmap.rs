@@ -63,6 +63,36 @@ pub trait Levels {
     fn rows(&self) -> usize;
     fn cols(&self) -> usize;
     fn at(&self, r: usize, c: usize) -> f32;
+    /// With one column, a row whose level is at or below this carries no
+    /// signal and is left out; `None` keeps every level (logs are all
+    /// below zero). See [`Above`].
+    fn floor(&self) -> Option<f32> {
+        None
+    }
+}
+
+/// `levels` with a floor: with one column, rows at or below `floor` are
+/// left out, as a level of zero in data that cannot go below it says
+/// nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct Above<L> {
+    pub levels: L,
+    pub floor: f32,
+}
+
+impl<L: Levels> Levels for Above<L> {
+    fn rows(&self) -> usize {
+        self.levels.rows()
+    }
+    fn cols(&self) -> usize {
+        self.levels.cols()
+    }
+    fn at(&self, r: usize, c: usize) -> f32 {
+        self.levels.at(r, c)
+    }
+    fn floor(&self) -> Option<f32> {
+        Some(self.floor)
+    }
 }
 
 /// Levels held row-major; missing past the end.
@@ -109,7 +139,8 @@ impl<F: Fn(usize, usize) -> f32> Levels for ByFn<F> {
 /// it is a number above zero: a tie, a row with fewer than two levels
 /// among two or more columns, or no level at all peaks nowhere. Missing
 /// levels never win. With one column there is no runner-up: the lead is
-/// the level itself, of any sign (log levels are all below zero).
+/// the level itself, of any sign (log levels are all below zero), and
+/// above [`Levels::floor`] when it has one.
 #[must_use]
 pub fn peak_margin<L: Levels + ?Sized>(m: &L, r: usize) -> Option<(usize, f32)> {
     let cols = m.cols();
@@ -123,7 +154,8 @@ pub fn peak_margin<L: Levels + ?Sized>(m: &L, r: usize) -> Option<(usize, f32)> 
         }
     }
     if cols == 1 {
-        return first.is_finite().then_some((top, first));
+        let above = m.floor().is_none_or(|f| first > f);
+        return (first.is_finite() && above).then_some((top, first));
     }
     let margin = first - second;
     (margin > 0. && margin.is_finite()).then_some((top, margin))
