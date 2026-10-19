@@ -575,6 +575,21 @@ Other wording may change.
   pixels per data unit, y up or down the screen (`YAxis`); `zoom_at`
   (a factor above one zooms in) and `pan_px` stay within `Limits` (a
   scale range, and `keep_inside` to stop panning past the data).
+  `map::raster::Frame`: a page in linear light (`Frame::blank` in a page
+  colour, or `Frame::from_srgba` over a picture in bytes, which keeps
+  them), with `stamp`ed `Shape`s, `ring` and `edge`, and `keep_text` for
+  a vector page. `map::points::Job` draws `PointLayer`s progressively, in
+  chunks of doubling size, in the order `ranked` or `by_level` gives;
+  `auto_radius`, `visible_count` and `group_medians` with it.
+  `map::text`: noto bitmap `Font`s, `draw`, `draw_aligned`,
+  `draw_vertical` and `TextRun`s, and `draw_tiny`, a 5×7 scale-bar font.
+  `map::labels::place` sets labels centred on their anchors, dropping
+  overlaps; one moved by `map::offsets::Offsets` (in line heights) goes
+  first, stays inside the frame and is joined to its anchor past half a
+  line, and `Hits` finds the label under a click. `OffsetBook` keeps
+  offsets per layout, by label name, in one JSON file.
+  `map::legend`: `draw_legend` (with `+k more` past a row limit) and
+  `draw_ramp_key`.
   `chrome::Chrome`: page, hint and menu styles from a theme, or the
   terminal's own with none, bordered popups, toasts and scrolled lists.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
