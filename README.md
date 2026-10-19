@@ -592,6 +592,17 @@ Other wording may change.
   `draw_ramp_key`.
   `chrome::Chrome`: page, hint and menu styles from a theme, or the
   terminal's own with none, bordered popups, toasts and scrolled lists.
+- `export`: a map, a chart or a grid of them as a PDF page.
+  `export::write_pdf(&pages, dpi, path)` (and `pdf_bytes`) writes each
+  `Page` as one raster image with its `TextRun`s set over it in Helvetica
+  (WinAnsi Latin-1, AFM widths, `export::font`), centred or turned as the
+  runs say, each in its own ink over a halo of its page colour.
+  `export::grid_page` tiles ready frames, each titled at its bottom left,
+  in the `shape` that keeps tiles largest. `PageSize` is a width in
+  inches and a dpi (`WIDTHS_IN`, `DPIS` offered), its pixels for an
+  aspect, the cell height text is sized for, and `check` against
+  `MAX_PIXELS`. With `clap`, `PdfArgs` adds `--pdf`, `--width` (7 in)
+  and `--dpi` (300).
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`
