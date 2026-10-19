@@ -10,7 +10,8 @@
 //! [`MAX_PIXELS`] and [`grid_page`] (senna's `render_grid`, over frames
 //! the viewer drew rather than its scenes) from `src/view/deck.rs`, the
 //! widths and resolutions from `src/view/tui/grid.rs`, and the sizing and
-//! flags of `--pdf` from `src/view/mod.rs`.
+//! flags of `--pdf` from `src/view/mod.rs` ([`PageSize::px`] its single
+//! map's page, [`PageSize::grid_px`] its grid's).
 
 use crate::map::colour::{to_linear, to_srgb_senna, Lin};
 use crate::map::raster::Frame;
@@ -44,16 +45,31 @@ const BASELINE: f32 = 0.78;
 /// Write `pages` to `path`, `dpi` raster pixels to the inch.
 ///
 /// # Errors
-/// When the file cannot be written.
+/// As [`pdf_bytes`], before the file is touched, or when it cannot be
+/// written.
 pub fn write_pdf(pages: &[Page], dpi: f32, path: &Path) -> io::Result<()> {
-    std::fs::write(path, pdf_bytes(pages, dpi))
+    std::fs::write(path, pdf_bytes(pages, dpi)?)
 }
 
 /// `pages` as the bytes of a PDF, `dpi` raster pixels to the inch. Each
 /// run is set in its own `ink` over a halo of its `bg`, so a caller with
 /// fixed greys of its own passes them in the runs.
-#[must_use]
-pub fn pdf_bytes(pages: &[Page], dpi: f32) -> Vec<u8> {
+///
+/// # Errors
+/// [`io::ErrorKind::InvalidInput`] for a `dpi` that is not a positive
+/// number, which would size the page in infinities, or an empty page,
+/// which readers refuse as an image.
+pub fn pdf_bytes(pages: &[Page], dpi: f32) -> io::Result<Vec<u8>> {
+    let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
+    if !(dpi.is_finite() && dpi > 0.0) {
+        return Err(invalid(format!("{dpi} dpi is not a resolution")));
+    }
+    if let Some(k) = pages
+        .iter()
+        .position(|p| p.img.width() == 0 || p.img.height() == 0)
+    {
+        return Err(invalid(format!("page {} is empty", k + 1)));
+    }
     let (catalog, tree, regular, bold) = (Ref::new(1), Ref::new(2), Ref::new(3), Ref::new(4));
     // Page, content and image of page k.
     let ids = |k: usize| {
@@ -152,7 +168,7 @@ pub fn pdf_bytes(pages: &[Page], dpi: f32) -> Vec<u8> {
         c.end_text();
         pdf.stream(content_id, &c.finish());
     }
-    pdf.finish()
+    Ok(pdf.finish())
 }
 
 /// A linear colour as the PDF's sRGB fractions, by senna's table.
@@ -213,7 +229,13 @@ pub fn grid_page(
         }));
         image::imageops::replace(&mut out, &frame.to_image(), x as i64, y as i64);
     }
-    // Hairlines between tiles.
+    // Hairlines between tiles, on a page that has pixels to draw them in.
+    if w == 0 || h == 0 {
+        return Page {
+            img: out,
+            text: kept,
+        };
+    }
     let [r, g, b] = theme.muted;
     let rule = image::Rgba([r, g, b, 255]);
     for c in 1..cols {
@@ -253,6 +275,19 @@ impl PageSize {
         (w, (w as f32 * aspect.clamp(0.4, 2.5)).round() as usize)
     }
 
+    /// The raster's pixels for a grid of `n` tiles, as senna sizes one: 4:3
+    /// tiles in the [`shape`] they take in a 4:3 page, the height as many
+    /// rows of them as the shape has, the aspect not held.
+    #[must_use]
+    pub fn grid_px(self, n: usize) -> (usize, usize) {
+        let w = (self.width_in * self.dpi as f32).round() as usize;
+        let (cols, rows) = shape(n, 4.0, 3.0);
+        (
+            w,
+            (w as f32 * 0.75 * rows as f32 / cols as f32).round() as usize,
+        )
+    }
+
     /// The cell height text is sized for: labels about 8 pt on the page,
     /// whatever its size.
     #[must_use]
@@ -260,20 +295,33 @@ impl PageSize {
         self.dpi as f32 * 11.0 / 72.0
     }
 
-    /// [`PageSize::px`], or why the page cannot be drawn: a width or dpi
-    /// that is not positive, or more than [`MAX_PIXELS`].
+    /// [`PageSize::px`], or why the page cannot be drawn: a width that is
+    /// not a positive number, a dpi of 0, or more than [`MAX_PIXELS`].
     ///
     /// # Errors
     /// The reason, to show the user.
     pub fn check(self, aspect: f32) -> Result<(usize, usize), String> {
-        if !(self.width_in > 0.0 && self.dpi > 0) {
+        self.fits(|p| p.px(aspect))
+    }
+
+    /// [`PageSize::grid_px`], or why the page cannot be drawn, as
+    /// [`PageSize::check`].
+    ///
+    /// # Errors
+    /// The reason, to show the user.
+    pub fn check_grid(self, n: usize) -> Result<(usize, usize), String> {
+        self.fits(|p| p.grid_px(n))
+    }
+
+    fn fits(self, px: impl FnOnce(Self) -> (usize, usize)) -> Result<(usize, usize), String> {
+        if !(self.width_in.is_finite() && self.width_in > 0.0 && self.dpi > 0) {
             return Err("the width and dpi must be positive".into());
         }
-        let (w, h) = self.px(aspect);
+        let (w, h) = px(self);
         if w == 0 || h == 0 {
             return Err(format!("{w} × {h} px is empty; raise the width or dpi"));
         }
-        if w * h > MAX_PIXELS {
+        if w.checked_mul(h).is_none_or(|n| n > MAX_PIXELS) {
             return Err(format!("{w} × {h} px is too large; lower the width or dpi"));
         }
         Ok((w, h))

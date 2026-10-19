@@ -71,7 +71,8 @@ fn text_stays_text_and_the_raster_is_one_image() {
             text: vec![run("CT1 · GENE1")],
         }],
         144.0,
-    );
+    )
+    .unwrap();
     let s = String::from_utf8_lossy(&bytes);
     assert!(s.starts_with("%PDF-"));
     assert!(s.contains("/Helvetica-Bold"));
@@ -114,7 +115,7 @@ fn centred_and_turned_runs_are_set_where_their_boxes_are() {
         text: vec![run("ab"), left, turned],
     };
     // At 72 dpi a pixel is a point.
-    let s = String::from_utf8_lossy(&pdf_bytes(&[page], 72.0)).into_owned();
+    let s = String::from_utf8_lossy(&pdf_bytes(&[page], 72.0).unwrap()).into_owned();
     let size = 10.0 * 0.74;
     let width = font::helvetica_width(b"ab", true) * size;
     let y = 72.0 - (3.0 + 0.78 * 10.0);
@@ -149,7 +150,7 @@ fn a_frame_with_kept_text_is_a_page_a_reader_parses() {
     // The text is not in the pixels.
     assert_eq!(page.img, blank);
     assert_eq!(page.text.len(), 1);
-    let bytes = pdf_bytes(&[page], 300.0);
+    let bytes = pdf_bytes(&[page], 300.0).unwrap();
     // Catalog, page tree, two fonts, and a page, its content and image.
     assert_eq!(objects(&bytes), 7);
     let s = String::from_utf8_lossy(&bytes);
@@ -177,9 +178,31 @@ fn pages_are_written_to_a_file() {
     };
     write_pdf(&[page(), page()], 72.0, &path).unwrap();
     let bytes = std::fs::read(&path).unwrap();
-    assert_eq!(bytes, pdf_bytes(&[page(), page()], 72.0));
+    assert_eq!(bytes, pdf_bytes(&[page(), page()], 72.0).unwrap());
     assert!(String::from_utf8_lossy(&bytes).contains("/Count 2"));
     assert_eq!(objects(&bytes), 4 + 2 * 3);
+}
+
+#[test]
+fn a_resolution_or_page_that_cannot_be_set_is_refused() {
+    let page = |w, h| Page {
+        img: RgbaImage::from_pixel(w, h, image::Rgba([0, 0, 0, 255])),
+        text: Vec::new(),
+    };
+    for dpi in [0.0, -72.0, f32::NAN, f32::INFINITY] {
+        let e = pdf_bytes(&[page(4, 4)], dpi).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{dpi}");
+    }
+    for (w, h) in [(0, 0), (4, 0), (0, 4)] {
+        let e = pdf_bytes(&[page(4, 4), page(w, h)], 72.0).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{w} × {h}");
+    }
+    // Refused before the file is touched.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad.pdf");
+    let e = write_pdf(&[page(4, 4)], 0.0, &path).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+    assert!(!path.exists());
 }
 
 #[test]
@@ -269,6 +292,20 @@ fn a_grid_page_keeps_text_the_tiles_already_held() {
 }
 
 #[test]
+fn an_empty_grid_page_has_no_rules_to_draw() {
+    let theme = Theme::PAPER;
+    let tiles = || -> Vec<(Frame, String)> {
+        (0..3)
+            .map(|k| (Frame::blank(0, 0, PAGE), format!("T{k}")))
+            .collect()
+    };
+    for (w, h) in [(30, 0), (0, 30), (0, 0)] {
+        let page = grid_page(tiles(), (w, h), 16.0, &theme);
+        assert_eq!(page.img.dimensions(), (w as u32, h as u32));
+    }
+}
+
+#[test]
 fn page_sizes_are_the_width_and_dpi_offered() {
     assert_eq!(PageSize::WIDTHS_IN, [3.5, 5.0, 7.0, 10.0, 14.0]);
     assert_eq!(PageSize::DPIS, [150, 300, 600, 1200]);
@@ -332,6 +369,48 @@ fn a_page_past_max_pixels_is_refused() {
             let (w, h) = p.px(1.0);
             assert_eq!(p.check(1.0).is_ok(), w * h <= MAX_PIXELS, "{p:?}");
         }
+    }
+}
+
+#[test]
+fn a_grid_page_is_sized_as_senna_sizes_it() {
+    // 4:3 tiles in a roughly 4:3 page, its aspect not held: two runs side
+    // by side make a page wider than any single map's.
+    let p = PageSize {
+        width_in: 7.0,
+        dpi: 300,
+    };
+    for n in 1..=12 {
+        let (cols, rows) = shape(n, 4.0, 3.0);
+        let w = 2100usize;
+        let h = (w as f32 * 0.75 * rows as f32 / cols as f32).round() as usize;
+        assert_eq!(p.grid_px(n), (w, h), "{n}");
+        assert_eq!(p.check_grid(n), Ok((w, h)), "{n}");
+    }
+    assert_eq!(p.grid_px(2), (2100, 788));
+    assert!(PageSize {
+        width_in: 14.0,
+        dpi: 1200
+    }
+    .check_grid(4)
+    .is_err());
+    assert!(PageSize {
+        width_in: 7.0,
+        dpi: 0
+    }
+    .check_grid(2)
+    .is_err());
+}
+
+#[test]
+fn a_page_too_wide_to_count_is_refused() {
+    for width_in in [1e10, f32::MAX, f32::INFINITY, f32::NEG_INFINITY] {
+        let p = PageSize {
+            width_in,
+            dpi: 1200,
+        };
+        assert!(p.check(1.0).is_err(), "{p:?}");
+        assert!(p.check_grid(2).is_err(), "{p:?}");
     }
 }
 
