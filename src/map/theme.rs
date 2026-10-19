@@ -23,7 +23,7 @@ pub struct Theme {
     pub hint: Srgb,
     /// Text drawn on the map (labels, titles).
     pub ink: Srgb,
-    /// Points outside the focused groups: visible as tissue, not as
+    /// Points outside the focused groups: visible as a backdrop, not as
     /// colour.
     pub dimmed: Srgb,
     /// Points with no group.
@@ -111,7 +111,7 @@ impl Theme {
         colour::ink_for(c, self.ink_lightness)
     }
 
-    /// Ramp for one group's propensity: from the background's side up to
+    /// Ramp for one group's score: from the background's side up to
     /// the strongest colour, so low values fade into the page.
     #[must_use]
     pub fn magma(&self) -> &'static Ramp {
@@ -130,11 +130,12 @@ impl Theme {
         }
     }
 
-    /// Ramp for feature levels: from the dimmed tissue grey at zero (of
+    /// Ramp for feature levels: from the dimmed grey at zero (of
     /// [`Theme::LIGHT`] or [`Theme::DARK`]), so points without the feature
-    /// still show the tissue, to the colour furthest from the background.
+    /// stay visible as points out of focus, to the colour furthest from the
+    /// background.
     #[must_use]
-    pub fn expression(&self) -> &'static Ramp {
+    pub fn levels(&self) -> &'static Ramp {
         fn hex([r, g, b]: Srgb) -> u32 {
             u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
         }

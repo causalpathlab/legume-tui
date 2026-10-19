@@ -21,7 +21,7 @@ fn menu_text_and_hints_read_clearly_on_the_page() {
         assert!(hint >= 4.5, "{t:?}: {hint}");
         // Hints stay a step below the text they explain.
         assert!(hint < text, "{t:?}");
-        // Muted points are tissue, not text.
+        // Muted points are a backdrop, not text.
         assert!(contrast(t.muted, t.background) < 2.0, "{t:?}");
     }
 }
@@ -77,14 +77,14 @@ fn ramps_start_on_the_background_side() {
     // dark theme and light on a light one.
     let lum = |c: [u8; 3]| c.iter().map(|&v| v as u32).sum::<u32>();
     for (theme, starts_light) in [(Theme::DARK, false), (Theme::LIGHT, true)] {
-        for ramp in [theme.magma(), theme.expression()] {
+        for ramp in [theme.magma(), theme.levels()] {
             let (low, high) = (lum(ramp.at(0.)), lum(ramp.at(1.)));
             assert_eq!(low > high, starts_light, "{theme:?}");
         }
     }
-    // Feature levels start on the dimmed tissue.
-    assert_eq!(Theme::LIGHT.expression().at(0.), Theme::LIGHT.dimmed);
-    assert_eq!(Theme::DARK.expression().at(0.), Theme::DARK.dimmed);
+    // Feature levels start on the dimmed points.
+    assert_eq!(Theme::LIGHT.levels().at(0.), Theme::LIGHT.dimmed);
+    assert_eq!(Theme::DARK.levels().at(0.), Theme::DARK.dimmed);
 }
 
 #[test]
