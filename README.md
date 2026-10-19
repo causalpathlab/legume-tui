@@ -598,8 +598,9 @@ Other wording may change.
   and orders the components by prevalence; `bars` stacks them from the
   bottom, a pixel column the renormalised sum of its rows, panels as wide
   as their rows (`widths`), and `Drawn::at` finds the panel and component
-  under a pixel. `figure` adds senna's title, panel names (turned when
-  one is too wide) and key; `name_rows` sets panel names in terminal
+  under a pixel. `figure` draws them in senna's panel widths
+  (`senna_widths`) with its title, panel names (turned when one is too
+  wide) and key; `name_rows` sets panel names in terminal
   rows. `chart::heatmap::by_margin` takes each group's top features by
   their lead over the next group (by level with one group), `candidates`
   and `top_by_margin` choose in two stages, `zscore_rows` scales rows,

@@ -2,7 +2,7 @@
 //! (stacked from the bottom), senna's decorated figure. The pinned numbers
 //! of the figure are what senna's own `draw_structure` (`src/view/chart.rs`,
 //! compiled apart from this crate) gives for the same plot with its stack
-//! run from the bottom, on panels whose widths both rules agree on.
+//! run from the bottom.
 
 use super::*;
 use crate::map::colour::{to_linear, Srgb};
@@ -240,6 +240,28 @@ fn a_dominant_tie_goes_to_the_more_prevalent_component() {
 }
 
 #[test]
+fn a_dominant_tie_goes_to_the_more_prevalent_component_of_higher_id() {
+    // Component 1 is the more prevalent; r0 ties 0 and 1, so it sorts
+    // with 1's rows, not with 0's as the first maximum would.
+    let p = [0.5f32, 0.5, 0.2, 0.8, 0.6, 0.4];
+    let all = names(&["all"]);
+    let l = Layout::build(
+        &Weights {
+            k: 2,
+            w: &p,
+            valid: None,
+        },
+        &Grouping {
+            of: &[0u32; 3],
+            names: &all,
+            order: None,
+        },
+    );
+    assert_eq!(l.stack, [1, 0]);
+    assert_eq!(l.panels[0].rows, [1, 0, 2]);
+}
+
+#[test]
 fn widths_sum_to_the_room_and_give_every_panel_a_pixel() {
     assert_eq!(widths(&[3, 3], 10, 2), [4, 4]);
     // Largest remainders take what is left over.
@@ -252,6 +274,47 @@ fn widths_sum_to_the_room_and_give_every_panel_a_pixel() {
     // No room at all: nothing to share.
     assert_eq!(widths(&[1, 1, 1], 3, 2), [0, 0, 0]);
     assert_eq!(widths(&[], 10, 2), Vec::<usize>::new());
+}
+
+#[test]
+fn senna_widths_floor_and_leave_the_rest_blank() {
+    // Seven pixels between two equal panels: three each, one left over.
+    assert_eq!(senna_widths(&[1, 1], 9, 2), [3, 3]);
+    assert_eq!(senna_widths(&[5, 3], 240, 2), [148, 89]);
+    // Every panel gets a pixel, even past the room.
+    assert_eq!(senna_widths(&[1, 99], 50, 0), [1, 49]);
+    assert_eq!(senna_widths(&[1, 1], 0, 2), [1, 1]);
+    assert_eq!(senna_widths(&[], 10, 2), Vec::<usize>::new());
+}
+
+#[test]
+fn hits_name_the_layout_s_panel_past_one_too_narrow_to_draw() {
+    // Widths [0, 1, 1]: the first panel gets no pixel and no span.
+    let panel = |name: &str, rows: std::ops::Range<u32>| Panel {
+        name: name.into(),
+        rows: rows.collect(),
+    };
+    let l = Layout {
+        panels: vec![panel("a", 0..1), panel("b", 1..6), panel("c", 6..11)],
+        stack: vec![0],
+    };
+    let ones = [1u8; 11];
+    let w = Weights {
+        k: 1,
+        w: &ones,
+        valid: None,
+    };
+    let mut f = Frame::blank(2, 4, PAGE);
+    let style = BarStyle {
+        palette: &PALETTE,
+        focus: None,
+        gap: 0,
+        hits: true,
+    };
+    let d = bars(&mut f, [0, 0, 2, 4], &l, &w, &style);
+    let at: Vec<(usize, &str)> = d.spans.iter().map(|s| (s.panel, s.name.as_str())).collect();
+    assert_eq!(at, [(1, "b"), (2, "c")]);
+    assert_eq!((d.at(0, 0), d.at(1, 3)), (Some((1, 0)), Some((2, 0))));
 }
 
 const RED: Srgb = [255, 0, 0];
@@ -525,7 +588,17 @@ fn even() -> (Vec<f32>, [u32; 8]) {
 }
 
 fn senna_figure(panels: &[&str], keep_text: bool) -> (Frame, Layout, Drawn) {
-    let (theta, groups) = even();
+    let (_, groups) = even();
+    senna_figure_at(panels, &groups, 301, keep_text)
+}
+
+fn senna_figure_at(
+    panels: &[&str],
+    groups: &[u32],
+    width: usize,
+    keep_text: bool,
+) -> (Frame, Layout, Drawn) {
+    let (theta, _) = even();
     let levels = names(panels);
     let w = Weights {
         k: 3,
@@ -535,12 +608,12 @@ fn senna_figure(panels: &[&str], keep_text: bool) -> (Frame, Layout, Drawn) {
     let l = Layout::build(
         &w,
         &Grouping {
-            of: &groups,
+            of: groups,
             names: &levels,
             order: None,
         },
     );
-    let mut f = Frame::blank(301, 200, PAGE);
+    let mut f = Frame::blank(width, 200, PAGE);
     if keep_text {
         f.keep_text();
     }
@@ -596,6 +669,28 @@ fn the_figure_is_senna_s_stacked_from_the_bottom() {
     let x = d.rect[0];
     assert_eq!(d.at(x, d.rect[3] - 1), Some((0, 2)));
     assert_eq!(d.at(x, d.rect[1]), Some((0, 1)));
+}
+
+#[test]
+fn the_figure_sizes_panels_as_senna_does() {
+    // An odd room leaves senna a blank column at the right.
+    let (_, even) = even();
+    for (w, hash) in [
+        (300, 0xe05c_a2d5_413c_f583),
+        (302, 0xdfd2_2d51_8479_cad3),
+        (303, 0x9227_9968_52bf_e687),
+    ] {
+        let (f, _, d) = senna_figure_at(&["CT1", "CT2"], &even, w, false);
+        assert_eq!(fnv(f.to_image().as_raw()), hash, "{w}");
+        let room = d.rect[2] - d.rect[0] - GAP;
+        assert_eq!(d.spans[1].x0, d.rect[0] + room / 2 + GAP, "{w}");
+    }
+    // Uneven panels: five rows and three.
+    let uneven = [0, 0, 0, 0, 0, 1, 1, 1];
+    for (w, hash) in [(300, 0x2796_7990_bf1b_2b67), (301, 0xf68a_2715_8bc6_649b)] {
+        let (f, ..) = senna_figure_at(&["CT1", "CT2"], &uneven, w, false);
+        assert_eq!(fnv(f.to_image().as_raw()), hash, "{w}");
+    }
 }
 
 #[test]
@@ -670,6 +765,7 @@ fn a_figure_too_small_says_so() {
 #[test]
 fn name_rows_alternate_and_never_overlap() {
     let span = |x0, x1, name: &str| Span {
+        panel: 0,
         x0,
         x1,
         name: name.into(),

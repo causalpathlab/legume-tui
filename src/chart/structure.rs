@@ -12,7 +12,7 @@
 //!
 //! Ported from pinto (`src/view/structure.rs`: `build`, `sort_cells`,
 //! `widths`, `render`) and senna (`src/view/chart.rs`: `build_structure`'s
-//! panels and `draw_structure`'s title, names and key), with pinto's plot
+//! panels and `draw_structure`'s widths, title, names and key), with pinto's plot
 //! names in terminal rows (`src/view/tui/plots.rs`: `plot_names`) as
 //! [`name_rows`]. [`bars`] draws the bars alone, as pinto does under its
 //! map; [`figure`] draws senna's whole chart around them. Hits are kept as
@@ -260,6 +260,16 @@ pub fn widths(sizes: &[usize], w: usize, gap: usize) -> Vec<usize> {
     out
 }
 
+/// senna's panel widths for `w` pixels with `gap` between panels: each
+/// its share of the room, rounded down, at least a pixel. The pixels left
+/// over stay blank at the right.
+#[must_use]
+pub fn senna_widths(sizes: &[usize], w: usize, gap: usize) -> Vec<usize> {
+    let n = sizes.iter().sum::<usize>().max(1);
+    let room = w.saturating_sub(gap * sizes.len().saturating_sub(1));
+    sizes.iter().map(|&c| (room * c / n).max(1)).collect()
+}
+
 /// How bars are coloured and spaced.
 #[derive(Clone, Copy, Debug)]
 pub struct BarStyle<'a> {
@@ -277,6 +287,9 @@ pub struct BarStyle<'a> {
 /// A panel's place in a drawn plot: its first and last pixel column.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {
+    /// Its place in [`Layout::panels`]: a panel too narrow for a pixel
+    /// has no span.
+    pub panel: usize,
     pub x0: usize,
     /// Inclusive.
     pub x1: usize,
@@ -308,14 +321,15 @@ impl Drawn {
         }
     }
 
-    /// The panel and component at pixel `(x, y)` of the frame.
+    /// The panel (by its place in [`Layout::panels`]) and component at
+    /// pixel `(x, y)` of the frame.
     #[must_use]
     pub fn at(&self, x: usize, y: usize) -> Option<(usize, usize)> {
         let [x0, y0, x1, y1] = self.rect;
         if self.cuts.is_empty() || x < x0 || x >= x1 || y < y0 || y >= y1 {
             return None;
         }
-        let panel = self.spans.iter().position(|s| s.x0 <= x && x <= s.x1)?;
+        let panel = self.spans.iter().find(|s| s.x0 <= x && x <= s.x1)?.panel;
         let per = self.stack.len() + 1;
         let cuts = &self.cuts[(x - x0) * per..(x - x0 + 1) * per];
         (0..self.stack.len())
@@ -339,6 +353,20 @@ pub fn bars<W: Copy + Into<f32>>(
     w: &Weights<W>,
     s: &BarStyle,
 ) -> Drawn {
+    let sizes: Vec<usize> = l.panels.iter().map(|p| p.rows.len()).collect();
+    let room = rect[2].saturating_sub(rect[0]);
+    bars_in(frame, rect, l, w, s, &widths(&sizes, room, s.gap))
+}
+
+/// [`bars`] in panels of the given widths.
+fn bars_in<W: Copy + Into<f32>>(
+    frame: &mut Frame,
+    rect: [usize; 4],
+    l: &Layout,
+    w: &Weights<W>,
+    s: &BarStyle,
+    widths: &[usize],
+) -> Drawn {
     let [x0, y0, x1, y1] = rect;
     let (room, height) = (x1.saturating_sub(x0), y1.saturating_sub(y0) as f32);
     let colour = |c: usize| match s.focus {
@@ -351,11 +379,10 @@ pub fn bars<W: Copy + Into<f32>>(
     } else {
         Vec::new()
     };
-    let sizes: Vec<usize> = l.panels.iter().map(|p| p.rows.len()).collect();
     let mut spans = Vec::new();
     let mut x = x0;
     let mut mix = vec![0f32; w.k];
-    for (p, width) in l.panels.iter().zip(widths(&sizes, room, s.gap)) {
+    for (panel, (p, &width)) in l.panels.iter().zip(widths).enumerate() {
         if width == 0 {
             continue;
         }
@@ -389,6 +416,7 @@ pub fn bars<W: Copy + Into<f32>>(
             }
         }
         spans.push(Span {
+            panel,
             x0: x,
             x1: x + width - 1,
             name: p.name.clone(),
@@ -428,10 +456,12 @@ pub struct Figure<'a> {
     pub theme: &'a Theme,
 }
 
-/// senna's whole chart: the title in bold at the top left, the bars,
-/// panel names under them (cut to [`NAME_CHARS`]) and the key at the
-/// right, in the theme's text colour. Text is kept as text when the frame
-/// keeps it. Too small for bars, it says so in a note and nothing is drawn.
+/// senna's whole chart: the title in bold at the top left, the bars in
+/// panels of [`senna_widths`], panel names under them (cut to
+/// [`NAME_CHARS`]) and the key at the right, in the theme's text colour.
+/// Text is kept as text when the frame keeps it. Too small for bars, it
+/// says so in a note and nothing is drawn. Unlike senna, bars stop at the
+/// key when panels given a pixel they had no room for would pass it.
 pub fn figure<W: Copy + Into<f32>>(
     frame: &mut Frame,
     l: &Layout,
@@ -471,7 +501,7 @@ pub fn figure<W: Copy + Into<f32>>(
     let (x0, y0) = (lh / 2, if fig.title.is_some() { 2 * lh } else { lh / 2 });
     let x1 = frame.w.saturating_sub(right);
     let sizes: Vec<usize> = l.panels.iter().map(|p| p.rows.len()).collect();
-    let room = widths(&sizes, x1.saturating_sub(x0), s.gap);
+    let room = senna_widths(&sizes, x1.saturating_sub(x0), s.gap);
     let widest = l
         .panels
         .iter()
@@ -497,7 +527,7 @@ pub fn figure<W: Copy + Into<f32>>(
         note(frame, "too small to draw", font, fig.theme);
         return Drawn::empty([x0, y0, x1, y1]);
     }
-    let drawn = bars(frame, [x0, y0, x1, y1], l, w, s);
+    let drawn = bars_in(frame, [x0, y0, x1, y1], l, w, s, &room);
     // Each panel's name under it.
     if fig.names != Names::None {
         for sp in &drawn.spans {
