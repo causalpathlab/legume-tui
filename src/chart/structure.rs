@@ -25,6 +25,9 @@ use crate::map::text::{self, Font};
 use crate::map::theme::Theme;
 use std::cmp::Ordering;
 
+/// What [`try_figure`] says, and [`figure`] notes, with no room for bars.
+const TOO_SMALL: &str = "too small to draw";
+
 /// Pixels between panels.
 pub const GAP: usize = 2;
 /// Characters of a panel's name drawn under it.
@@ -546,23 +549,46 @@ impl FigureGeom {
 /// [`Names`] decides at that width) under the bars, inside the frame.
 /// Turned names take a band held to a third of the height. The width is
 /// the caller's: a title or names wider than it are not made to fit.
+/// Where no height shows all of it, a height past what any figure of
+/// these parts needs ([`figure_size_checked`] tells this apart).
 #[must_use]
 pub fn figure_size(l: &Layout, s: &BarStyle, fig: &Figure, width: usize) -> usize {
+    figure_height(l, s, fig, width).0
+}
+
+/// [`figure_size`], or `None` where no height shows all of the figure at
+/// `width`: the key leaves no room across for bars, or the names no room
+/// down.
+#[must_use]
+pub fn figure_size_checked(l: &Layout, s: &BarStyle, fig: &Figure, width: usize) -> Option<usize> {
+    match figure_height(l, s, fig, width) {
+        (h, true) => Some(h),
+        (_, false) => None,
+    }
+}
+
+/// [`figure_size`], and whether the figure fits in it.
+fn figure_height(l: &Layout, s: &BarStyle, fig: &Figure, width: usize) -> (usize, bool) {
     let keys = key_names(l, fig);
     let g = FigureGeom::new(width, 0, l, s, fig, &keys);
     let lh = g.lh;
-    let low = g.rect[1] + 5;
-    let high = 3 * (low + g.widest + lh + keys.len() * lh);
-    least(low, high, |h| {
-        FigureGeom::new(width, h, l, s, fig, &keys).fits_down(h, keys.len(), fig.names)
-    })
+    let y0 = g.rect[1];
+    let floor = y0 + 5;
+    let high = 3 * (floor + g.widest + lh + keys.len() * lh);
+    // No height under the key's rows fits.
+    let low = floor.max(y0 + keys.len() * lh);
+    let fits = |h| FigureGeom::new(width, h, l, s, fig, &keys).fits_down(h, keys.len(), fig.names);
+    let h = least(low, high, fits);
+    let [x0, _, x1, _] = g.rect;
+    (h, x1 > x0 + 4 && fits(h))
 }
 
 /// The whole chart: the title in bold at the top left, the bars in
 /// panels of [`senna_widths`], panel names under them (cut to
 /// [`NAME_CHARS`]) and the key at the right, in the theme's text colour.
 /// Text is kept as text when the frame keeps it. Too small for bars, it
-/// says so in a note and nothing is drawn. Bars stop at the key when
+/// says so in a note under the title and nothing else is drawn
+/// ([`try_figure`] draws nothing and says why). Bars stop at the key when
 /// panels given a pixel they had no room for would pass it.
 /// [`figure_size`] is the height that shows all of it at a width.
 pub fn figure<W: Copy + Into<f32>>(
@@ -572,29 +598,51 @@ pub fn figure<W: Copy + Into<f32>>(
     s: &BarStyle,
     fig: &Figure,
 ) -> Drawn {
+    match try_figure(frame, l, w, s, fig) {
+        Ok(d) => d,
+        Err(why) => {
+            draw_title(frame, fig);
+            note(frame, why, fig.font, fig.theme);
+            let keys = key_names(l, fig);
+            Drawn::empty(FigureGeom::new(frame.w, frame.h, l, s, fig, &keys).rect)
+        }
+    }
+}
+
+/// The title in bold at the top left.
+fn draw_title(frame: &mut Frame, fig: &Figure) {
+    if let Some(title) = fig.title {
+        let lh = fig.font.line_height() as i32;
+        let (bg, ink) = (frame.background(), to_linear(fig.theme.text));
+        text::draw(frame, fig.bold, title, lh / 2, lh / 2, ink, bg);
+    }
+}
+
+/// [`figure`], or, where the frame has no room for bars (the key or the
+/// title leaves none), nothing drawn and why. A layout with no panels has
+/// room, and draws its title and key with no bars.
+///
+/// # Errors
+/// `"too small to draw"` when there is no room for bars.
+pub fn try_figure<W: Copy + Into<f32>>(
+    frame: &mut Frame,
+    l: &Layout,
+    w: &Weights<W>,
+    s: &BarStyle,
+    fig: &Figure,
+) -> Result<Drawn, &'static str> {
+    let keys = key_names(l, fig);
+    let g = FigureGeom::new(frame.w, frame.h, l, s, fig, &keys);
+    let [x0, y0, x1, y1] = g.rect;
+    if y1 <= y0 + 4 || x1 <= x0 + 4 {
+        return Err(TOO_SMALL);
+    }
     let bg = frame.background();
     let ink = to_linear(fig.theme.text);
     let font = fig.font;
     let lh = font.line_height();
-    if let Some(title) = fig.title {
-        text::draw(
-            frame,
-            fig.bold,
-            title,
-            lh as i32 / 2,
-            lh as i32 / 2,
-            ink,
-            bg,
-        );
-    }
-    let keys = key_names(l, fig);
-    let g = FigureGeom::new(frame.w, frame.h, l, s, fig, &keys);
+    draw_title(frame, fig);
     let (key_w, turned, label_h, room) = (g.key_w, g.turned, g.label_h, &g.room);
-    let [x0, y0, x1, y1] = g.rect;
-    if y1 <= y0 + 4 || x1 <= x0 + 4 {
-        note(frame, "too small to draw", font, fig.theme);
-        return Drawn::empty([x0, y0, x1, y1]);
-    }
     let drawn = bars_in(frame, [x0, y0, x1, y1], l, w, s, room);
     // Each panel's name under it.
     if fig.names != Names::None {
@@ -625,7 +673,7 @@ pub fn figure<W: Copy + Into<f32>>(
             text::draw(frame, font, name, (kx + lh) as i32, y as i32, ink, bg);
         }
     }
-    drawn
+    Ok(drawn)
 }
 
 /// Panel names for the terminal rows under a plot drawn at `px_per_cell`

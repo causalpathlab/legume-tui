@@ -1049,3 +1049,178 @@ fn figure_size_of_senna_s_figure() {
         2 * 16 + 8 * 16
     );
 }
+
+/// [`figure_size`] as a search one pixel at a time from the title's line.
+fn figure_size_linear(l: &Layout, s: &BarStyle, fig: &Figure, width: usize) -> usize {
+    let keys = key_names(l, fig);
+    let g = FigureGeom::new(width, 0, l, s, fig, &keys);
+    let low = g.rect[1] + 5;
+    let high = 3 * (low + g.widest + g.lh + keys.len() * g.lh);
+    (low..=high)
+        .find(|&h| FigureGeom::new(width, h, l, s, fig, &keys).fits_down(h, keys.len(), fig.names))
+        .unwrap_or(high)
+}
+
+#[test]
+fn figure_size_is_the_linear_search_s() {
+    let mut g = Lcg(29);
+    for case in 0..300 {
+        let mut r = RandomFigure::new(&mut g);
+        // Narrow too, where nothing fits and the search gives up.
+        if g.below(4) == 0 {
+            r.width = g.below(40);
+        }
+        let (l, s, fig) = (r.layout(), r.style(), r.figure());
+        assert_eq!(
+            figure_size(&l, &s, &fig, r.width),
+            figure_size_linear(&l, &s, &fig, r.width),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn figure_size_of_many_keys_is_quick() {
+    let k = 1500;
+    let n = 6;
+    let theta: Vec<f32> = (0..n * k).map(|i| 1.0 + (i % 7) as f32).collect();
+    let groups: Vec<u32> = (0..n).map(|i| (i % 2) as u32).collect();
+    let levels = names(&["L1", "L2"]);
+    let key: Vec<String> = (0..k).map(|c| format!("CT{c}")).collect();
+    let w = Weights {
+        k,
+        w: &theta,
+        valid: None,
+    };
+    let l = Layout::build(
+        &w,
+        &Grouping {
+            of: &groups,
+            names: &levels,
+            order: None,
+        },
+    );
+    let fig = Figure {
+        title: Some("T"),
+        key: Some(&key),
+        names: Names::Auto,
+        font: Font::for_cell_height(16.0, false),
+        bold: Font::for_cell_height(16.0, true),
+        theme: &Theme::PAPER,
+    };
+    let style = BarStyle {
+        palette: &PALETTE,
+        focus: None,
+        gap: GAP,
+        hits: false,
+    };
+    let t = std::time::Instant::now();
+    let h = figure_size(&l, &style, &fig, 800);
+    let took = t.elapsed();
+    assert!(took.as_millis() < 1000, "{took:?}");
+    assert!(h >= l.stack.len() * fig.font.line_height(), "{h}");
+}
+
+/// A figure of `panels` (the six rows of [`even`] split among them) with
+/// a three-component key.
+fn figure_of(panels: &[&str]) -> (Vec<f32>, Vec<u32>, Vec<String>, Vec<String>) {
+    let (theta, _) = even();
+    let groups: Vec<u32> = (0..8).map(|i| (i % panels.len().max(1)) as u32).collect();
+    (theta, groups, names(panels), names(&["T0", "T1", "T2"]))
+}
+
+fn senna_fig<'a>(key: &'a [String]) -> Figure<'a> {
+    Figure {
+        title: Some("T"),
+        key: Some(key),
+        names: Names::Auto,
+        font: Font::for_cell_height(16.0, false),
+        bold: Font::for_cell_height(16.0, true),
+        theme: &Theme::PAPER,
+    }
+}
+
+fn senna_style() -> BarStyle<'static> {
+    BarStyle {
+        palette: &PALETTE,
+        focus: None,
+        gap: GAP,
+        hits: true,
+    }
+}
+
+#[test]
+fn try_figure_is_figure_without_the_note() {
+    let (theta, groups, levels, key) = figure_of(&["L1", "L2"]);
+    let w = Weights {
+        k: 3,
+        w: &theta,
+        valid: None,
+    };
+    let g = Grouping {
+        of: &groups,
+        names: &levels,
+        order: None,
+    };
+    let l = Layout::build(&w, &g);
+    let (fig, s) = (senna_fig(&key), senna_style());
+    // Room: the same drawing as figure's.
+    let h = figure_size_checked(&l, &s, &fig, 301).expect("a height fits");
+    assert_eq!(h, figure_size(&l, &s, &fig, 301));
+    let mut a = Frame::blank(301, h, PAGE);
+    let mut b = Frame::blank(301, h, PAGE);
+    let da = figure(&mut a, &l, &w, &s, &fig);
+    let db = try_figure(&mut b, &l, &w, &s, &fig).expect("room");
+    assert_eq!((da, a.to_image()), (db, b.to_image()));
+    // No room across: the key leaves no bars.
+    let narrow = 40;
+    assert_eq!(figure_size_checked(&l, &s, &fig, narrow), None);
+    let mut f = Frame::blank(narrow, 400, PAGE);
+    f.keep_text();
+    let blank = f.to_image();
+    assert_eq!(
+        try_figure(&mut f, &l, &w, &s, &fig),
+        Err("too small to draw")
+    );
+    assert_eq!(f.to_image(), blank, "nothing drawn");
+    assert!(f.take_text().is_empty(), "no note");
+    // No room down: too short for the bars.
+    let mut f = Frame::blank(301, 8, PAGE);
+    assert_eq!(
+        try_figure(&mut f, &l, &w, &s, &fig),
+        Err("too small to draw")
+    );
+    // figure says the same in a note.
+    let mut f = Frame::blank(narrow, 400, PAGE);
+    f.keep_text();
+    let d = figure(&mut f, &l, &w, &s, &fig);
+    assert!(d.spans.is_empty());
+    let said: Vec<String> = f.take_text().into_iter().map(|r| r.text).collect();
+    assert!(said.contains(&"too small to draw".to_string()), "{said:?}");
+}
+
+#[test]
+fn no_panels_is_not_no_room() {
+    let (theta, _, _, key) = figure_of(&["L1"]);
+    let w = Weights {
+        k: 3,
+        w: &theta,
+        valid: Some(&[false; 8]),
+    };
+    let levels = names(&["L1"]);
+    let groups = [0u32; 8];
+    let l = Layout::build(
+        &w,
+        &Grouping {
+            of: &groups,
+            names: &levels,
+            order: None,
+        },
+    );
+    assert!(l.panels.is_empty());
+    let (fig, s) = (senna_fig(&key), senna_style());
+    let h = figure_size_checked(&l, &s, &fig, 301).expect("a height fits");
+    let mut f = Frame::blank(301, h, PAGE);
+    let d = try_figure(&mut f, &l, &w, &s, &fig).expect("room, no panels");
+    assert!(d.spans.is_empty());
+}
