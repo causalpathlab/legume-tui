@@ -97,6 +97,11 @@ impl Frame {
         }
     }
 
+    /// The pixels in linear light, row-major.
+    pub(crate) fn pixels(&self) -> &[Lin] {
+        &self.px
+    }
+
     /// The page colour.
     #[must_use]
     pub fn background(&self) -> Lin {

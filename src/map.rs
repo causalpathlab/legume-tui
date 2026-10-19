@@ -6,6 +6,8 @@
 //! around a map, styled by a theme, is [`crate::chrome`].
 
 pub mod colour;
+#[cfg(feature = "map-kitty")]
+pub mod kitty;
 pub mod labels;
 pub mod legend;
 pub mod offsets;
