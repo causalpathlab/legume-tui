@@ -34,6 +34,12 @@ map = []
 # A save dialog for a viewer's exports: what, how large, how fine and the
 # file name, with names that never replace a file unasked. ratatui only.
 save = []
+# The figures a viewer saved, kept from one session to the next with a
+# thumbnail each, and the strip that shows them.
+gallery = ["dep:serde", "dep:serde_json", "dep:tempfile", "dep:image"]
+# Each saved file's size, time and SHA-256, so a figure can be traced and
+# checked against the files on disk.
+gallery-trace = ["gallery", "dep:sha2"]
 
 [dependencies]
 ratatui = "0.30"
@@ -43,6 +49,10 @@ tempfile = { version = "3.2", optional = true }
 vt100 = { version = "0.16", optional = true }
 log = { version = "0.4", optional = true }
 unicode-width = { version = "0.2", optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+sha2 = { version = "0.11", optional = true }
 
 # Pseudo-terminals, sessions and signals; Unix only.
 [target.'cfg(unix)'.dependencies]

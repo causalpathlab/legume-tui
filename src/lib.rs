@@ -82,11 +82,13 @@ pub mod child;
 pub mod chrome;
 #[cfg(feature = "clap")]
 pub mod cli;
+#[cfg(feature = "gallery")]
+pub mod gallery;
 #[cfg(feature = "graphics")]
 pub mod graphics;
 #[cfg(feature = "logs")]
 pub mod logs;
-#[cfg(feature = "save")]
+#[cfg(any(feature = "save", feature = "gallery"))]
 pub mod look;
 #[cfg(feature = "map")]
 pub mod map;

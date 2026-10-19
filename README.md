@@ -587,6 +587,22 @@ Other wording may change.
   `SaveRequest` on enter, and a name whose files exist is replaced only
   on a second enter, asked again whenever the name changes. Styles come
   from a `look::Look` (the terminal's, or a `chrome::Chrome`).
+- `gallery`: what a viewer saved, in a directory it names
+  (`.senna-view`), newest first with a thumbnail each, kept from one
+  session to the next. `Gallery::open(dir, Policy)`, `add`, `remove`,
+  `relocate` (to a folder or a new name, a set's files together) and
+  `check`; the log is read again before each change, so two viewers in
+  one directory keep each other's saves. `Policy::plain()` drops entries
+  whose file is gone; a `Policy` can keep them, set aside a log it cannot
+  read, and keep the log private. What a viewer keeps beside an entry is
+  its `Entry::extra`. `gallery::thumb`: `shrink` in linear light,
+  `write_png`, `read_png`. `gallery::strip::Strip`: the strip of saved
+  figures on the left, scrolled by the wheel, its keys (`Keymap`) coming
+  back as `Action`s; thumbnails drawn by a `ThumbPainter`
+  (`ProtocolPainter` with `graphics`).
+- `gallery-trace`: `Policy::traced()`, each file of a save with its size,
+  time and SHA-256, and nothing moved or deleted unless it is the file
+  recorded and the log is this user's alone.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`
