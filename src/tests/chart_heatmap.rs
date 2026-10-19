@@ -474,3 +474,39 @@ fn a_thumbnail_is_pinto_s_heat_picture() {
     let f = thumbnail(&z, 2, None, 2, &theme, CLIP);
     assert_eq!((f.w, f.h), (4, 4));
 }
+
+#[test]
+fn a_cell_takes_the_diverging_colour_of_its_clipped_z() {
+    let missing: Srgb = [1, 2, 3];
+    assert_eq!(cell_colour(1.25, 2.5, missing), diverging(0.5));
+    assert_eq!(cell_colour(-2.5, 2.5, missing), diverging(-1.0));
+    assert_eq!(cell_colour(0.0, 2.5, missing), diverging(0.0));
+    // Beyond the clip the colour saturates.
+    assert_eq!(cell_colour(9.0, 2.5, missing), diverging(1.0));
+    assert_eq!(cell_colour(-9.0, 2.5, missing), diverging(-1.0));
+    // A value that is not a number is missing.
+    assert_eq!(cell_colour(f32::NAN, 2.5, missing), missing);
+    assert_eq!(cell_colour(f32::INFINITY, 2.5, missing), missing);
+    assert_eq!(cell_colour(f32::NEG_INFINITY, 2.5, missing), missing);
+}
+
+#[test]
+fn a_cell_in_linear_light_follows_the_same_rule() {
+    use crate::map::colour::diverging_lin;
+    let missing = [0.1, 0.2, 0.3];
+    assert_eq!(cell_colour_lin(1.25, 2.5, missing), diverging_lin(0.5));
+    assert_eq!(cell_colour_lin(9.0, 2.5, missing), diverging_lin(1.0));
+    assert_eq!(cell_colour_lin(-9.0, 2.5, missing), diverging_lin(-1.0));
+    assert_eq!(cell_colour_lin(f32::NAN, 2.5, missing), missing);
+    assert_eq!(cell_colour_lin(f32::INFINITY, 2.5, missing), missing);
+}
+
+#[test]
+fn a_thumbnail_s_pixels_are_pinned() {
+    let swatch = [to_linear([10, 20, 30]), to_linear([200, 100, 50])];
+    let z = [3.0, -0.7, f32::NAN, 0.0, 1.2, f32::INFINITY, -9.0, 0.3, 2.5];
+    let f = thumbnail(&z, 3, Some(&swatch), 3, &Theme::DARK, CLIP);
+    assert_eq!(fnv(f.to_image().as_raw()), 0xa4fc_8cc5_6fe9_c1e0);
+    let f = thumbnail(&z, 3, None, 2, &Theme::LIGHT, 1.0);
+    assert_eq!(fnv(f.to_image().as_raw()), 0x99b0_f59d_455e_18a5);
+}

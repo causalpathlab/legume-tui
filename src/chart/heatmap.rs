@@ -22,7 +22,7 @@
 //! `pick_top(own_peaks(margins))` gives.
 
 use super::note;
-use crate::map::colour::{diverging, diverging_lin, to_linear, to_srgb, Lin};
+use crate::map::colour::{diverging, diverging_lin, to_linear, to_srgb, Lin, Srgb};
 use crate::map::raster::Frame;
 use crate::map::text::{self, Font};
 use crate::map::theme::Theme;
@@ -34,6 +34,27 @@ pub const CANDIDATES: usize = 5;
 
 const NOTHING: &str = "no features stand out in these groups";
 const TOO_SMALL: &str = "too small to draw";
+
+/// A cell's colour: the diverging colour of `z / clip` (saturating beyond
+/// `±clip`) when `z` is finite, else `missing`.
+#[must_use]
+pub fn cell_colour(z: f32, clip: f32, missing: Srgb) -> Srgb {
+    if z.is_finite() {
+        diverging(z / clip)
+    } else {
+        missing
+    }
+}
+
+/// [`cell_colour`] in linear light, for a heatmap drawn into a frame.
+#[must_use]
+pub fn cell_colour_lin(z: f32, clip: f32, missing: Lin) -> Lin {
+    if z.is_finite() {
+        diverging_lin(z / clip)
+    } else {
+        missing
+    }
+}
 
 /// A features × groups matrix of levels. Its columns are the groups shown,
 /// in display order; a level that is not a number is missing.
@@ -328,11 +349,7 @@ pub fn draw_heat(
         );
         for c in 0..cols {
             let v = h.z.get(r * cols + c).copied().unwrap_or(f32::NAN);
-            let colour = if v.is_finite() {
-                diverging_lin(v / h.clip)
-            } else {
-                s.missing
-            };
+            let colour = cell_colour_lin(v, h.clip, s.missing);
             frame.fill([col_x(c), ya, col_x(c + 1), yb.max(ya + 1)], colour);
         }
     }
@@ -427,11 +444,7 @@ pub fn thumbnail(
                 Some(s) if r == 0 => s.get(c).map_or(bg, |&l| to_srgb(l)),
                 _ => {
                     let v = z.get((r - top) * cols + c).copied().unwrap_or(0.);
-                    if v.is_finite() {
-                        diverging(v / clip)
-                    } else {
-                        theme.dimmed
-                    }
+                    cell_colour(v, clip, theme.dimmed)
                 }
             };
             rgba.extend_from_slice(&[red, g, b, 255]);
