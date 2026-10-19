@@ -93,7 +93,7 @@ fn hello_from(path: &Path, size: Size, env: &[(&str, &str)]) -> UnixStream {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    let s = UnixStream::connect(path).unwrap();
+    let s = wire::connect(path).unwrap();
     wire::write_frame(&s, wire::HELLO, &wire::hello_body(size, &env)).unwrap();
     s
 }
@@ -108,7 +108,7 @@ fn attach_now(path: &Path) -> UnixStream {
 /// Read output until it contains `needle`; what came, and the frame that
 /// ended the stream if one did.
 fn output_until(s: &mut UnixStream, needle: &[u8]) -> Vec<u8> {
-    s.set_read_timeout(Some(WAIT)).unwrap();
+    wire::set_timeout(s, true, Some(WAIT)).unwrap();
     let mut out = Vec::new();
     while !out.windows(needle.len()).any(|w| w == needle) {
         match wire::read_frame(s).unwrap() {
@@ -122,7 +122,7 @@ fn output_until(s: &mut UnixStream, needle: &[u8]) -> Vec<u8> {
 
 /// The next frame that is not output.
 fn next_event(s: &mut UnixStream) -> Option<(u8, Vec<u8>)> {
-    s.set_read_timeout(Some(WAIT)).unwrap();
+    wire::set_timeout(s, true, Some(WAIT)).unwrap();
     loop {
         match wire::read_frame(s).unwrap() {
             Some((wire::OUTPUT | wire::SCREEN, _)) => continue,
@@ -169,8 +169,7 @@ fn repaint_is_asked_only_once_the_client_is_ready() {
     let mut c = hello(&h.path, Size::default());
     // Hello alone: no output, no word to the program.
     std::thread::sleep(Duration::from_millis(300));
-    c.set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
+    wire::set_timeout(&c, true, Some(Duration::from_millis(200))).unwrap();
     assert!(wire::read_frame(&mut c).is_err(), "output before ready");
     assert!(h.told().is_empty());
     // Ready: the program is told, and output flows.
@@ -421,7 +420,7 @@ fn a_client_joining_later_is_told_the_screen_is_the_alternate_one() {
     let mut c = attach_now(&h.path);
     h.wait_told(&[ATTACHED]);
     input(&mut c, b"hi\n");
-    c.set_read_timeout(Some(WAIT)).unwrap();
+    wire::set_timeout(&c, true, Some(WAIT)).unwrap();
     assert_eq!(
         wire::read_frame(&mut c).unwrap(),
         Some((wire::SCREEN, vec![1]))
@@ -457,7 +456,7 @@ fn input_a_program_is_not_reading_is_dropped_and_the_socket_read_on() {
     h.wait_told(&[ATTACHED]);
     // Far more than its queue and the pty take; a host that stopped
     // reading the socket would fail these writes.
-    c.set_write_timeout(Some(WAIT)).unwrap();
+    wire::set_timeout(&c, false, Some(WAIT)).unwrap();
     for _ in 0..512 {
         input(&mut c, &[b'x'; 1 << 14]);
     }
@@ -528,11 +527,11 @@ fn force_kills_a_program_that_ignores_the_stop() {
 #[test]
 fn another_version_is_turned_away() {
     let h = host("while read x; do :; done");
-    let mut s = UnixStream::connect(&h.path).unwrap();
+    let mut s = wire::connect(&h.path).unwrap();
     let mut body = wire::hello_body(Size::default(), &[]);
     body[0] = wire::VERSION + 1;
     wire::write_frame(&s, wire::HELLO, &body).unwrap();
-    s.set_read_timeout(Some(WAIT)).unwrap();
+    wire::set_timeout(&s, true, Some(WAIT)).unwrap();
     assert_eq!(wire::read_frame(&mut s).unwrap(), None);
     dir::stop(&h.path, true, WAIT).unwrap();
     h.done.join().unwrap();
@@ -617,9 +616,9 @@ fn only_the_attached_client_sizes_the_pty() {
 #[test]
 fn a_watcher_hears_every_attach_and_detach() {
     let mut h = host("while read x; do :; done");
-    let mut w = UnixStream::connect(&h.path).unwrap();
+    let mut w = wire::connect(&h.path).unwrap();
     wire::write_frame(&w, wire::WATCH, &[]).unwrap();
-    w.set_read_timeout(Some(WAIT)).unwrap();
+    wire::set_timeout(&w, true, Some(WAIT)).unwrap();
     let mut heard = |n: usize| {
         let mut b = vec![0u8; n];
         w.read_exact(&mut b).unwrap();
@@ -735,7 +734,7 @@ fn sigpipe_child() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(dir::ask(&h.path).is_some(), "the host is still there");
     // A client writes to a host that is gone.
-    let (a, b) = UnixStream::pair().unwrap();
+    let (a, b) = wire::pair().unwrap();
     drop(b);
     let err = wire::write_frame(&a, wire::INPUT, b"x").unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
@@ -753,4 +752,16 @@ fn sigpipe_at_its_default_kills_neither_host_nor_client() {
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{:?}: {said}", out.status);
     assert!(said.contains("1 passed"), "{said}");
+}
+
+#[test]
+fn a_socket_whose_peer_has_closed_is_read_and_written_as_one_gone() {
+    // macOS refuses socket options there: the timeouts are let be.
+    let (mut a, b) = wire::pair().unwrap();
+    drop(b);
+    wire::set_timeout(&a, true, Some(WAIT)).unwrap();
+    wire::set_timeout(&a, false, Some(WAIT)).unwrap();
+    let err = wire::write_frame(&a, wire::INPUT, b"x").unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    assert_eq!(wire::read_frame(&mut a).unwrap(), None);
 }

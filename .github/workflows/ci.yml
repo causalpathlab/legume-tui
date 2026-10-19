@@ -69,7 +69,7 @@ jobs:
       - run: cargo test ${{ matrix.features.flags }}
       - name: diagnostics (temporary)
         if: always()
-        run: cargo test --test child diag -- --nocapture
+        run: cargo test --lib diag -- --nocapture
 
   msrv:
     name: MSRV (1.91)

@@ -298,7 +298,7 @@ enum Asked {
 
 /// Ask the host behind `path` about itself. The status is not filled in.
 fn asked(path: &Path) -> Asked {
-    let mut s = match UnixStream::connect(path) {
+    let mut s = match wire::connect(path) {
         Ok(s) => s,
         Err(e)
             if matches!(
@@ -311,8 +311,8 @@ fn asked(path: &Path) -> Asked {
         Err(_) => return Asked::Silent,
     };
     let answer = (|| {
-        s.set_read_timeout(Some(ASK)).ok()?;
-        s.set_write_timeout(Some(ASK)).ok()?;
+        wire::set_timeout(&s, true, Some(ASK)).ok()?;
+        wire::set_timeout(&s, false, Some(ASK)).ok()?;
         wire::write_frame(&s, wire::INFO, &[]).ok()?;
         match wire::read_frame(&mut s).ok()?? {
             (wire::INFO_REPLY, b) if b.len() >= 13 => Some(Listed {
@@ -722,8 +722,8 @@ pub(crate) fn stop_waiting(
     mut waiting: impl FnMut(),
 ) -> io::Result<bool> {
     use std::io::Read;
-    let mut s = UnixStream::connect(path)?;
-    s.set_read_timeout(Some(ASK))?;
+    let mut s = wire::connect(path)?;
+    wire::set_timeout(&s, true, Some(ASK))?;
     wire::write_frame(&s, wire::KILL, &[u8::from(force)])?;
     let _ = wire::read_frame(&mut s);
     let start = std::time::Instant::now();
@@ -743,7 +743,8 @@ pub(crate) fn stop_waiting(
         }
         let until = say_at.map_or(patience.limit, |at| at.min(patience.limit));
         // A zero timeout would be none at all.
-        s.set_read_timeout(Some((until - waited).max(Duration::from_millis(1))))?;
+        let left = (until - waited).max(Duration::from_millis(1));
+        wire::set_timeout(&s, true, Some(left))?;
         match s.read(&mut buf) {
             // What the host tells watchers: not ours to read.
             Ok(n) if n > 0 => {}

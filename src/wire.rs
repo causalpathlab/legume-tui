@@ -7,12 +7,20 @@
 //! answers with [`SCREEN`] and [`OUTPUT`] and, at the end, [`EXIT`] or
 //! [`ELSEWHERE`]. A client answers [`EXIT`] with [`HEARD`].
 //!
-//! Frames go out with `send(MSG_NOSIGNAL)` (`SO_NOSIGPIPE` on macOS): a
-//! peer that is gone is an error to handle, never a SIGPIPE, whatever the
-//! tool set SIGPIPE to.
+//! Frames go out with `send(MSG_NOSIGNAL)`, or on macOS on sockets made
+//! with `SO_NOSIGPIPE` ([`connect`], [`pair`], [`accepted`]): a peer that
+//! is gone is an error to handle, never a SIGPIPE, whatever the tool set
+//! SIGPIPE to.
+//!
+//! On macOS a socket whose peer has closed takes no options: setting one
+//! fails with EINVAL. [`set_timeout`] lets that be, as a read there ends
+//! at once and a write fails, and [`accepted`] and [`connect`] report it
+//! as the peer gone ([`io::ErrorKind::BrokenPipe`]).
 
 use std::io::{self, Read};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::time::Duration;
 
 /// Bumped when a frame changes meaning; a host refuses other versions.
 pub(crate) const VERSION: u8 = 5;
@@ -137,17 +145,78 @@ pub(crate) fn decode_env(bytes: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The send flags that make a peer that is gone an error, not a SIGPIPE.
-fn no_sigpipe(s: &UnixStream) -> io::Result<rustix::net::SendFlags> {
-    #[cfg(any(target_vendor = "apple", target_os = "freebsd", target_os = "netbsd"))]
-    {
-        rustix::net::sockopt::set_socket_nosigpipe(s, true)?;
-        Ok(rustix::net::SendFlags::empty())
-    }
+/// The flags every send has, for a peer gone to be an error: said per
+/// call where the system takes `MSG_NOSIGNAL`, else an option of the
+/// socket ([`no_sigpipe`]).
+fn send_flags() -> rustix::net::SendFlags {
     #[cfg(not(any(target_vendor = "apple", target_os = "freebsd", target_os = "netbsd")))]
     {
-        let _ = s;
-        Ok(rustix::net::SendFlags::NOSIGNAL)
+        rustix::net::SendFlags::NOSIGNAL
+    }
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd", target_os = "netbsd"))]
+    {
+        rustix::net::SendFlags::empty()
+    }
+}
+
+/// Make `s` one whose sends to a peer gone fail (EPIPE) instead of
+/// raising SIGPIPE, where that is a socket's option (`SO_NOSIGPIPE`).
+/// Set as the socket is made, while its peer is there: on macOS one whose
+/// peer has closed takes no options, and that is reported as the peer
+/// gone.
+fn no_sigpipe(s: &UnixStream) -> io::Result<()> {
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd", target_os = "netbsd"))]
+    rustix::net::sockopt::set_socket_nosigpipe(s, true).map_err(|e| peer_gone(e.into()))?;
+    #[cfg(not(any(target_vendor = "apple", target_os = "freebsd", target_os = "netbsd")))]
+    let _ = s;
+    Ok(())
+}
+
+/// A socket option refused because the peer has closed (EINVAL, on
+/// macOS) as what it is: the peer gone.
+fn peer_gone(e: io::Error) -> io::Error {
+    if cfg!(target_vendor = "apple")
+        && e.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error())
+    {
+        io::ErrorKind::BrokenPipe.into()
+    } else {
+        e
+    }
+}
+
+/// Connect to the socket at `path`, made as [`no_sigpipe`] says.
+pub(crate) fn connect(path: impl AsRef<Path>) -> io::Result<UnixStream> {
+    accepted(UnixStream::connect(path)?)
+}
+
+/// A connection taken from a listener, made as [`no_sigpipe`] says;
+/// [`io::ErrorKind::BrokenPipe`] if its peer is gone already.
+pub(crate) fn accepted(s: UnixStream) -> io::Result<UnixStream> {
+    no_sigpipe(&s)?;
+    Ok(s)
+}
+
+/// A connected pair of sockets, made as [`no_sigpipe`] says.
+#[cfg(test)]
+pub(crate) fn pair() -> io::Result<(UnixStream, UnixStream)> {
+    let (a, b) = UnixStream::pair()?;
+    no_sigpipe(&a)?;
+    no_sigpipe(&b)?;
+    Ok((a, b))
+}
+
+/// Give `s`'s reads (`read`) or writes `timeout`. On macOS a socket whose
+/// peer has closed takes no options (EINVAL): the timeout is let be, as
+/// a read there ends at once and a write fails at once.
+pub(crate) fn set_timeout(s: &UnixStream, read: bool, timeout: Option<Duration>) -> io::Result<()> {
+    let set = if read {
+        s.set_read_timeout(timeout)
+    } else {
+        s.set_write_timeout(timeout)
+    };
+    match set.map_err(peer_gone) {
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        done => done,
     }
 }
 
@@ -155,7 +224,7 @@ fn no_sigpipe(s: &UnixStream) -> io::Result<rustix::net::SendFlags> {
 /// that was. [`io::ErrorKind::WouldBlock`] when it takes nothing.
 pub(crate) fn send_now(s: &UnixStream, buf: &[u8]) -> io::Result<usize> {
     use rustix::net::{send, SendFlags};
-    let flags = no_sigpipe(s)? | SendFlags::DONTWAIT;
+    let flags = send_flags() | SendFlags::DONTWAIT;
     loop {
         match send(s, buf, flags) {
             Err(rustix::io::Errno::INTR) => {}
@@ -165,11 +234,12 @@ pub(crate) fn send_now(s: &UnixStream, buf: &[u8]) -> io::Result<usize> {
     }
 }
 
-/// Send all of `buf`, with no SIGPIPE if the peer is gone. A write
+/// Send all of `buf`, with no SIGPIPE if the peer is gone (on a socket
+/// made as [`no_sigpipe`] says). A write
 /// timeout on `s` holds as for a plain write.
 pub(crate) fn send_all(s: &UnixStream, mut buf: &[u8]) -> io::Result<()> {
     use rustix::net::send;
-    let flags = no_sigpipe(s)?;
+    let flags = send_flags();
     while !buf.is_empty() {
         match send(s, buf, flags) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),

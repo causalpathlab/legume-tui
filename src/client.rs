@@ -384,7 +384,7 @@ fn relay(
                         });
                         // Taken: the host keeps it for a later look if
                         // this is not heard.
-                        let _ = sock.set_write_timeout(Some(HEARD_WAIT));
+                        let _ = wire::set_timeout(sock, false, Some(HEARD_WAIT));
                         let _ = outbox.last(sock, wire::HEARD);
                         break;
                     }
@@ -450,7 +450,7 @@ pub(crate) fn attach_and_report(dir: &Path, tool: &Tool, id: &str) -> io::Result
     let mut id = id.to_string();
     let mut switched = false;
     loop {
-        let sock = match UnixStream::connect(dir::socket(dir, &id)) {
+        let sock = match wire::connect(dir::socket(dir, &id)) {
             Ok(s) => s,
             Err(_) if switched => {
                 eprintln!("[{id} has ended]");
