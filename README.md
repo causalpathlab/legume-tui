@@ -107,8 +107,8 @@ legume-tui = "0.3"
   (not after a panic).
 - `kill` also names a labelled session by its label, after its id:
   `tool-view-1 stopped (labelled work)`, and likewise in its waiting and
-  `--force` lines. The `<id> stopped` that tools and their tests read
-  stays whole, as it will in later releases.
+  `--force` lines. The text `<id> stopped` that tools and their tests
+  look for is unchanged (see "What tools may read").
 
 ## 0.3.3
 
@@ -472,6 +472,23 @@ its modes off, raw mode left and the normal screen shown while the work
 runs, then the screen taken back and repainted whole. Up or not, `kill`
 meanwhile asks the program to stop (`session.stop_requested()`) and waits
 for the work, as `stoppable` does.
+
+### What tools may read
+
+The exit status of each subcommand is the first thing to go by. Beyond it,
+these are kept as they are across releases, for tools, scripts and their
+tests:
+
+- `sessions`: one line per live session, tab-separated: `label (id)` or
+  the id alone, then `attached` or `detached`, age, `pid N`, the command
+  line and the last status; `no live <tool> sessions` when there are none.
+- `kill`: a line beginning `<id> stopped` once the session has ended, its
+  label, if any, after it (` (labelled <label>)`), then what the session
+  left, if anything, as it left it.
+- What an ended session left, said by `sessions`, `attach` or a start of
+  the tool: `<id> ended: <text>`.
+
+Other wording may change.
 
 ## Features
 

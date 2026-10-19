@@ -362,8 +362,9 @@ fn a_session_is_named_on_its_first_detach_and_found_by_its_name() {
         "{listed:?}"
     );
 
-    // Killed by name, said by its id then its label (tools' tests read
-    // `<id> stopped`): no socket, status or label left.
+    // Killed by name, said by its id then its label (`<id> stopped` is
+    // one of the lines tools may read, README): no socket, status or label
+    // left.
     for (name, id) in [("work", "view-1"), ("other", "view-2")] {
         let said = dir.run(&["kill", name]);
         let line = format!("demo-{id} stopped (labelled {name})");
@@ -378,8 +379,9 @@ fn a_session_that_cannot_start_says_why_again_when_its_screen_goes() {
     let dir = private();
     let said = "legume-tui: running without a session (";
     let key = format!(
-        "), so {} does not detach; LEGUME_TUI_NO_DETACH=1 runs without trying",
-        legume_tui::detach_key()
+        "), so {} does not detach; {}=1 runs without trying",
+        legume_tui::detach_key(),
+        legume_tui::NO_DETACH_VAR
     );
 
     // A socket path past the length one may have: said, then covered by
@@ -392,10 +394,14 @@ fn a_session_that_cannot_start_says_why_again_when_its_screen_goes() {
     let from = t.seen_len();
     t.type_(b"q");
     assert_eq!(t.exit_code(), 0);
-    // Said again as the screen goes, on the user's own screen.
-    t.wait_for_after(from, said);
+    // Said again, once, as the screen goes, in sight on the user's own
+    // screen.
     t.wait_for_after(from, &key);
     t.wait_screen("running without a session");
+    assert!(!t.alternate(), "said on the user's own screen");
+    said_once_after_the_screen(&t.text(), &key);
+    // Run plain, with no host: nothing left where it could not bind.
+    assert_eq!(std::fs::read_dir(&long).unwrap().count(), 0);
 
     // A directory open to other users, and a program that leaves words of
     // its own: both are said, the program's first.
@@ -408,7 +414,8 @@ fn a_session_that_cannot_start_says_why_again_when_its_screen_goes() {
     t.type_(b"q");
     assert_eq!(t.exit_code(), 0);
     t.wait_for_after(from, "open to other users (expected mode 0700)), so");
-    let end = &t.text()[from..];
+    let text = t.text();
+    let end = after_the_screen(&text);
     let (left, why) = (end.find("demo-bye: left by the quit path"), end.find(said));
     assert!(
         matches!((left, why), (Some(l), Some(w)) if l < w),
@@ -849,8 +856,13 @@ fn an_error_held_while_detached_is_seen_on_the_next_attach() {
 /// That `needle` is said once in `text` after the last time it left the
 /// alternate screen.
 fn said_once_after_the_screen(text: &str, needle: &str) {
-    let after = text.rfind("\x1b[?1049l").map_or(text, |at| &text[at..]);
+    let after = after_the_screen(text);
     assert_eq!(after.matches(needle).count(), 1, "{after:?}");
+}
+
+/// What the terminal was sent after the screen last went.
+fn after_the_screen(text: &str) -> &str {
+    text.rfind("\x1b[?1049l").map_or(text, |at| &text[at..])
 }
 
 #[test]

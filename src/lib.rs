@@ -759,9 +759,9 @@ struct Inner {
     /// What a plain session leaves ([`Session::leave`]), said when its
     /// screen goes.
     left: Mutex<Option<String>>,
-    /// Why a launch could not host ([`Bypass::NoHost`]), said again as
-    /// each screen goes, after what the program left.
-    no_host: OnceLock<String>,
+    /// Why a launch could not host ([`Bypass::NoHost`]); see
+    /// [`Session::restore`].
+    no_host: Option<String>,
 }
 
 /// What one round's wait ([`Session::poll`]) ended with.
@@ -869,7 +869,7 @@ impl Session {
             at,
             said: Mutex::new(String::new()),
             left: Mutex::new(None),
-            no_host: OnceLock::new(),
+            no_host: None,
         };
         Self {
             inner: Arc::new(inner),
@@ -901,8 +901,11 @@ impl Session {
     #[cfg(sessions)]
     fn no_host(why: String) -> Self {
         eprintln!("{why}");
-        let session = Self::bypassed(Bypass::NoHost);
-        let _ = session.inner.no_host.set(why);
+        let mut session = Self::bypassed(Bypass::NoHost);
+        // Not shared yet: set before anything else holds it.
+        if let Some(inner) = Arc::get_mut(&mut session.inner) {
+            inner.no_host = Some(why);
+        }
         session
     }
 
@@ -1166,7 +1169,9 @@ impl Session {
     /// done when the session [`Tool::session`] returned is dropped. From
     /// here `kill` ends the program as by default, but a stop that came
     /// before stays asked ([`Session::stop_requested`]). What a plain
-    /// session left ([`Session::leave`]) is said now.
+    /// session left ([`Session::leave`]) is said now, then, unless
+    /// panicking, why a launch could not host it ([`Bypass::NoHost`]), as
+    /// each screen goes: the screen covered it as it opened.
     pub fn restore(&self) {
         if self.inner.on.swap(false, SeqCst) {
             let _ = screen::turn_off();
@@ -1178,7 +1183,7 @@ impl Session {
             }
             // Not after a panic: it is no cause of one.
             if !std::thread::panicking() {
-                if let Some(why) = self.inner.no_host.get() {
+                if let Some(why) = &self.inner.no_host {
                     eprintln!("{why}");
                 }
             }
