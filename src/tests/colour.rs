@@ -88,6 +88,10 @@ fn pinto_palettes_keep_their_bytes() {
     ];
     assert_eq!(Categorical::PINTO_LIGHT.srgb_all(6), light);
     assert_eq!(Categorical::PINTO_DARK.srgb_all(6), dark);
+    // pinto turns the hue without taking it modulo 360°: the last bit of
+    // a few colours far along shows it.
+    assert_eq!(Categorical::PINTO_LIGHT.srgb(255, 256), [0, 149, 99]);
+    assert_eq!(Categorical::PINTO_DARK.srgb(264, 265), [203, 136, 213]);
 }
 
 #[test]
@@ -96,6 +100,8 @@ fn senna_categories_keep_their_colours() {
     assert_eq!(p.colour(0, 5), [0.687_268, 0.121_939_12, 0.107_462_82]);
     assert_eq!(p.colour(1, 5), [0.0, 0.387_798_07, 0.162_886_87]);
     assert_eq!(p.colour(2, 5), [0.327_382_62, 0.174_712_58, 0.691_845_66]);
+    // senna takes the hue modulo 360°, here past it.
+    assert_eq!(p.colour(3, 5), [0.511_738_6, 0.206_584_87, 0.0]);
     // Past a dozen groups lightness alternates.
     assert_eq!(p.colour(0, 20), p.colour(0, 5));
     assert_eq!(p.colour(1, 20), [0.038_938_567, 0.617_429_8, 0.297_616_45]);
