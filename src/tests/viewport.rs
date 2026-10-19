@@ -193,3 +193,23 @@ fn resized_keeps_the_centre_and_what_fits() {
         Viewport::fit(SQUARE, 50, 50, 0.92, YAxis::Up)
     );
 }
+
+#[test]
+fn scale_limits_given_either_way_round_hold_and_never_panic() {
+    let lim = |a: f32, b: f32| Limits {
+        scale: Some((a, b)),
+        keep_inside: None,
+    };
+    for (a, b) in [(2.0, 8.0), (8.0, 2.0)] {
+        let mut vp = Viewport::fit([0.0, 0.0, 10.0, 10.0], 100, 100, 1.0, YAxis::Up);
+        vp.zoom_at(100.0, 50.0, 50.0, &lim(a, b));
+        assert_eq!(vp.scale, 8.0, "({a}, {b})");
+        vp.zoom_at(0.001, 50.0, 50.0, &lim(a, b));
+        assert_eq!(vp.scale, 2.0, "({a}, {b})");
+    }
+    // Limits that are not numbers are no limits.
+    let mut vp = Viewport::fit([0.0, 0.0, 10.0, 10.0], 100, 100, 1.0, YAxis::Up);
+    let before = vp.scale;
+    vp.zoom_at(2.0, 50.0, 50.0, &lim(f32::NAN, f32::NAN));
+    assert_eq!(vp.scale, before * 2.0);
+}

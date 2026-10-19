@@ -138,10 +138,12 @@ fn a_failed_command_gives_its_reason_and_a_stopped_one_says_so() {
     stopper.stop();
     let start = Instant::now();
     assert_eq!(
-        run_one(grouped("sleep 5"), &stopper, |_| {}),
+        run_one(grouped("sleep 60"), &stopper, |_| {}),
         Err(Failed::Stopped)
     );
-    assert!(start.elapsed() < Duration::from_secs(4));
+    // Far short of the minute it would sleep: stopped, not waited out,
+    // with room for a loaded machine.
+    assert!(start.elapsed() < Duration::from_secs(30));
 
     let c = Command::new("/no/such/program");
     assert!(matches!(

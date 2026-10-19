@@ -23,7 +23,8 @@ pub type Bounds = [f32; 4];
 /// How far a viewport may zoom and pan.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Limits {
-    /// Smallest and largest scale, in pixels per data unit.
+    /// Smallest and largest scale, in pixels per data unit, either way
+    /// round (an empty extent can put a fit's limits in reverse).
     pub scale: Option<(f32, f32)>,
     /// Keep the window inside these bounds: no panning past the data. On
     /// an axis the window is wider than them, they sit in its middle.
@@ -95,8 +96,12 @@ impl Viewport {
     pub fn zoom_at(&mut self, factor: f32, px: f32, py: f32, lim: &Limits) {
         let anchor = self.to_data(px, py);
         self.scale *= factor;
-        if let Some((min, max)) = lim.scale {
-            self.scale = self.scale.clamp(min, max);
+        if let Some((a, b)) = lim.scale {
+            // Either way round; limits that are not numbers hold nothing.
+            let (lo, hi) = (a.min(b), a.max(b));
+            if lo <= hi {
+                self.scale = self.scale.clamp(lo, hi);
+            }
         }
         let moved = self.to_data(px, py);
         self.cx += anchor[0] - moved[0];
