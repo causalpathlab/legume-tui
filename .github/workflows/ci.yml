@@ -67,9 +67,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test ${{ matrix.features.flags }}
-      - name: diagnostics (temporary)
-        if: always()
-        run: cargo test --lib diag -- --nocapture
 
   msrv:
     name: MSRV (1.91)

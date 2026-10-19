@@ -297,7 +297,9 @@ pub(crate) fn run(sock: UnixStream) -> io::Result<Outcome> {
 
 /// The relay loop proper; `screen` follows what it writes to `stdout`.
 /// What the host sent is taken whole frames at a time, as many as came,
-/// and written out at once.
+/// and written out at once. `sock` is made non-blocking for it: macOS
+/// does not take `MSG_DONTWAIT` alone as a reason not to wait, and a send
+/// to a host not reading would hold up the keys.
 fn relay(
     sock: &UnixStream,
     stdin: BorrowedFd<'_>,
@@ -315,6 +317,7 @@ fn relay(
     // When the bytes held now began to be held: they go on as they are
     // [`HOLD`] later, however busy the output keeps the loop.
     let mut held_since: Option<Instant> = None;
+    sock.set_nonblocking(true)?;
     loop {
         let wait = match (chord.holding(), held_since) {
             (false, _) => None,
@@ -384,6 +387,8 @@ fn relay(
                         });
                         // Taken: the host keeps it for a later look if
                         // this is not heard.
+                        // Waiting for room, as long as the timeout lets it.
+                        let _ = sock.set_nonblocking(false);
                         let _ = wire::set_timeout(sock, false, Some(HEARD_WAIT));
                         let _ = outbox.last(sock, wire::HEARD);
                         break;

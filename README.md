@@ -79,6 +79,23 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.3
+
+- On macOS a socket whose peer has closed refuses socket options
+  (EINVAL). `SO_NOSIGPIPE` was set before every send, so a send to a
+  client or host that was gone failed as an invalid argument instead of a
+  broken pipe; it is now set once, as each socket is connected, accepted
+  or paired. A read or write timeout on such a socket is let be: a read
+  there ends at once and a write fails at once. `kill` waiting for a
+  session to end no longer fails when the host closes between its reads.
+- On macOS `send(MSG_DONTWAIT)` on a blocking socket still waits for
+  room, so a client whose host stopped reading stopped reading the keys,
+  the detach key with them. The client's relay now makes its socket
+  non-blocking, and waits for room (up to its timeout) only for its last
+  word to the host.
+- CI on Linux and macOS: rustfmt, clippy for each feature set and the
+  plain build, tests, and the MSRV.
+
 ## 0.3.2
 
 - `testing::Private::command` (and every terminal and run made from it)

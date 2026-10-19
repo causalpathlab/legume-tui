@@ -221,7 +221,9 @@ pub(crate) fn set_timeout(s: &UnixStream, read: bool, timeout: Option<Duration>)
 }
 
 /// Send what of `buf` the socket takes now, without waiting; how much
-/// that was. [`io::ErrorKind::WouldBlock`] when it takes nothing.
+/// that was. [`io::ErrorKind::WouldBlock`] when it takes nothing. On
+/// macOS only a non-blocking socket is sure not to wait: there
+/// `MSG_DONTWAIT` alone may still wait for room.
 pub(crate) fn send_now(s: &UnixStream, buf: &[u8]) -> io::Result<usize> {
     use rustix::net::{send, SendFlags};
     let flags = send_flags() | SendFlags::DONTWAIT;
@@ -279,8 +281,8 @@ pub(crate) struct Inbox {
 }
 
 impl Inbox {
-    /// Read what `s` has now, without waiting; false at the end of the
-    /// stream.
+    /// Read what `s` has now, without waiting (`s` non-blocking, as
+    /// [`send_now`] says); false at the end of the stream.
     pub fn fill(&mut self, s: &UnixStream) -> io::Result<bool> {
         use rustix::net::{recv, RecvFlags};
         if self.at > 0 {
