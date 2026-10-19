@@ -40,8 +40,12 @@ impl<K: Eq + Hash> Offsets<K> {
     }
 
     /// Move label `k` by `d_em` from where it is. Moved back to its
-    /// anchor, it is no longer moved.
+    /// anchor, it is no longer moved. A move that is not a finite number
+    /// is ignored.
     pub fn nudge(&mut self, k: K, (dx, dy): (f32, f32)) {
+        if !(dx.is_finite() && dy.is_finite()) {
+            return;
+        }
         let at = self.by.entry(k).or_insert((0.0, 0.0));
         *at = (at.0 + dx, at.1 + dy);
         if at.0.abs() < NONE_EM && at.1.abs() < NONE_EM {
@@ -71,10 +75,15 @@ impl<K: Eq + Hash> Offsets<K> {
     }
 }
 
+/// Offsets that are not finite numbers are left out: JSON has no place for
+/// them, and one in a book would spoil the whole file.
 impl<K: Eq + Hash> FromIterator<(K, (f32, f32))> for Offsets<K> {
     fn from_iter<I: IntoIterator<Item = (K, (f32, f32))>>(it: I) -> Self {
         Self {
-            by: it.into_iter().collect(),
+            by: it
+                .into_iter()
+                .filter(|(_, (dx, dy))| dx.is_finite() && dy.is_finite())
+                .collect(),
         }
     }
 }
@@ -97,20 +106,34 @@ pub struct OffsetBook {
 }
 
 impl OffsetBook {
-    /// The book at `path`; empty when there is none, it cannot be read,
-    /// or it is of another version.
-    #[must_use]
-    pub fn load(path: &Path) -> Self {
-        let layouts = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<BookFile>(&s).ok())
-            .filter(|f| f.version == VERSION)
-            .map(|f| f.layouts)
-            .unwrap_or_default();
-        Self {
+    /// The book at `path`; empty when there is none.
+    ///
+    /// # Errors
+    /// When the file is there but cannot be read, is not a book, or is of
+    /// another version (`InvalidData`), so a caller does not save over it.
+    pub fn load(path: &Path) -> io::Result<Self> {
+        let layouts = match std::fs::read_to_string(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => return Err(e),
+            Ok(s) => {
+                let f: BookFile = serde_json::from_str(&s)?;
+                if f.version != VERSION {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "{}: label offsets of version {}, not {VERSION}",
+                            path.display(),
+                            f.version
+                        ),
+                    ));
+                }
+                f.layouts
+            }
+        };
+        Ok(Self {
             path: path.to_path_buf(),
             layouts,
-        }
+        })
     }
 
     /// Where the book is kept.
