@@ -564,6 +564,9 @@ Other wording may change.
   close with it, so a save that must outlive a hangup writes what it has
   first, logs to a file, or bears a failed write (Rust's `eprintln!`
   panics on one).
+- `style`: `map::colour`, `map::theme`, `map::viewport` and `chrome`
+  alone, for a tool that takes the styles without the fonts and images
+  `map` draws with.
 - `map`: what the map viewers share. `map::colour`: linear light and
   sRGB by table (every byte reads back as it was), OKLCH and OKLab, label
   ink, `Categorical` palettes (`SENNA`, `PINTO_LIGHT`, `PINTO_DARK`, each

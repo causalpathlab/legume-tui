@@ -4,17 +4,27 @@
 //! ([`raster`]), its points ([`points`]), text ([`text`]), labels a viewer
 //! can move ([`labels`], [`offsets`]) and keys ([`legend`]). The screen
 //! around a map, styled by a theme, is [`crate::chrome`].
+//!
+//! Feature `style` gives the colours, the theme and the viewport (and
+//! [`crate::chrome`]) without the fonts and images that `map` adds for
+//! drawing.
 
 pub mod colour;
+#[cfg(feature = "map")]
 pub mod labels;
+#[cfg(feature = "map")]
 pub mod legend;
+#[cfg(feature = "map")]
 pub mod offsets;
+#[cfg(feature = "map")]
 pub mod points;
+#[cfg(feature = "map")]
 pub mod raster;
+#[cfg(feature = "map")]
 pub mod text;
 pub mod theme;
 pub mod viewport;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "map"))]
 #[path = "tests/scene.rs"]
 mod tests;

@@ -31,7 +31,10 @@ testing = ["dep:tempfile", "dep:vt100"]
 # What the tools' map viewers share: colour, the page's theme, the
 # viewport between data and pixels, the screen's chrome, and drawing a map:
 # points, text, labels a viewer can move, and keys.
-map = ["dep:rayon", "dep:image", "dep:noto-sans-mono-bitmap", "dep:serde", "dep:serde_json", "dep:tempfile"]
+# The colours, the page's theme, the viewport and the screen's chrome
+# alone: no fonts or images.
+style = []
+map = ["style", "dep:rayon", "dep:image", "dep:noto-sans-mono-bitmap", "dep:serde", "dep:serde_json", "dep:tempfile"]
 
 [dependencies]
 # `unstable-rendered-line-info`: a paragraph's wrapped row count, for popups.
