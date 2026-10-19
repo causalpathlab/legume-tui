@@ -191,6 +191,13 @@ fn diverging_is_pale_at_zero_and_equally_light_either_side() {
 }
 
 #[test]
+fn diverging_keeps_pinto_s_bytes() {
+    // pinto's OKLab carries its own last digit on one coefficient.
+    assert_eq!(diverging(-0.979_66), [28, 106, 195]);
+    assert_eq!(diverging(-0.340_01), [172, 197, 231]);
+}
+
+#[test]
 fn luminance_runs_from_black_to_white() {
     assert_eq!(luminance([0; 3]), 0.0);
     assert!((luminance([255; 3]) - 1.0).abs() < 1e-6);

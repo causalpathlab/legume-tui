@@ -10,7 +10,7 @@
 //! palette, label ink, the activity ramp, its `Encoder` table as
 //! [`encode_senna`]) and pinto (`src/view/color.rs`:
 //! the decode and encode tables, its palettes, [`Ramp`], [`viridis`],
-//! [`magma`], [`diverging`]). The maths is theirs, operation for
+//! [`magma`], [`diverging`] on pinto's own `oklab_to_srgb`). The maths is theirs, operation for
 //! operation, so each tool draws the colours it drew before.
 
 use std::sync::LazyLock;
@@ -122,6 +122,21 @@ pub fn oklch(l: f32, c: f32, h_deg: f32) -> Lin {
         -0.004_196_086_3 * l3 - 0.703_418_6 * m3 + 1.707_614_7 * s3,
     ]
     .map(|v| v.clamp(0.0, 1.0))
+}
+
+/// [`oklch`] as pinto writes it (`oklab_to_srgb`): one coefficient ends a
+/// digit shorter, a different `f32`, which moves a few bytes.
+fn oklch_pinto(l: f32, c: f32, h_deg: f32) -> Lin {
+    let h = h_deg.to_radians();
+    let (a, b) = (c * h.cos(), c * h.sin());
+    let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
+    let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
+    let s_ = (l - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+    [
+        4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_94 * s_,
+        -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_4 * s_,
+        -0.004_196_086_3 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_,
+    ]
 }
 
 /// Linear sRGB → OKLab.
@@ -319,7 +334,7 @@ pub fn diverging(t: f32) -> Srgb {
     let t = if t.is_finite() { t.clamp(-1., 1.) } else { 0. };
     let (l, c) = (0.97 - 0.45 * t.abs(), 0.16 * t.abs());
     let hue = if t < 0. { 255. } else { 27. };
-    oklch(l, c, hue).map(encode_exact)
+    oklch_pinto(l, c, hue).map(encode_exact)
 }
 
 /// Sequential ramp for feature activity, light to deep, one hue family
