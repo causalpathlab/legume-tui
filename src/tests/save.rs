@@ -365,6 +365,31 @@ fn the_dialog_draws_its_fields_size_and_keys() {
     }
 }
 
+#[test]
+fn a_long_file_name_wraps_and_the_keys_stay_in_sight() {
+    // A folder deep enough that the name wraps over several rows.
+    let v = Viewer {
+        dir: std::path::PathBuf::from(format!("/{}", "deep/".repeat(40))),
+        views: 2,
+    };
+    let d = SaveDialog::new(&v, Scope::Grid, Numbering::Suffix);
+    for rows in [16, 12] {
+        let mut t = Terminal::new(TestBackend::new(90, rows)).unwrap();
+        t.draw(|f| d.render(f, f.area(), &v, &Look::default()))
+            .unwrap();
+        let buf = t.backend().buffer();
+        let all: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+        assert!(all.contains("enter save"), "{rows} rows:\n{all}");
+    }
+}
+
 /// A map whose save writes a structure picture and table beside it, as
 /// pinto's does.
 struct Map {
