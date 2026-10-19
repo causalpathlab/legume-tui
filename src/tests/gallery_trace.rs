@@ -111,10 +111,14 @@ fn an_unreadable_log_is_set_aside_not_emptied() {
     let log_dir = tmp.path().join(".lupin-view");
     std::fs::create_dir_all(&log_dir).unwrap();
     std::fs::write(log_dir.join("saved.json"), "{ not json").unwrap();
+    std::fs::create_dir_all(log_dir.join("thumbs")).unwrap();
+    std::fs::write(log_dir.join("thumbs").join("1.png"), b"").unwrap();
     let g = open(&log_dir);
     assert!(g.entries().is_empty());
     assert!(g.set_aside().is_some_and(Path::is_file));
     assert!(!log_dir.join("saved.json").exists());
+    // The thumbnails stay with the log set aside, to be recovered.
+    assert!(log_dir.join("thumbs").join("1.png").exists());
 }
 
 #[test]

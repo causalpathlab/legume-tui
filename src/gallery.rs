@@ -4,8 +4,9 @@
 //! one session to the next. The runs' own directories are not touched.
 //!
 //! The store is senna's (`src/view/saved.rs`: newest first, a save of the
-//! same file replacing the old, thumbnails nothing refers to deleted, the
-//! log read again before each change so two viewers in one directory keep
+//! same file replacing the old, thumbnails nothing refers to deleted (here
+//! once a while old, and never when the log could not be read), the log
+//! read again before each change so two viewers in one directory keep
 //! each other's saves, `relocate` into a folder) with pinto's thumbnails
 //! (`src/view/saved.rs`: [`thumb::shrink`] in linear light, never
 //! enlarged). lupin's (`src/tui/gallery.rs`) comes in through a
@@ -38,6 +39,9 @@ pub const KEEP: usize = 200;
 pub const LOG: &str = "saved.json";
 /// The thumbnails' directory in the gallery's.
 const THUMBS: &str = "thumbs";
+/// Seconds a thumbnail no entry names is kept: another viewer may have
+/// written it and not yet its log.
+pub const ORPHAN_AGE: u64 = 600;
 
 /// What happens to an entry whose file is gone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,14 +284,17 @@ impl<X> Gallery<X> {
 
 impl<X: Serialize + DeserializeOwned> Gallery<X> {
     /// The saves logged in `dir`. Under [`Missing::Drop`] those whose file
-    /// or thumbnail is gone are left out; thumbnails nothing refers to any
-    /// more are deleted. A log that cannot be read starts an empty gallery,
+    /// or thumbnail is gone are left out, with their thumbnails; thumbnails
+    /// no entry names are deleted once [`ORPHAN_AGE`] old, and only when
+    /// the log was read. A log that cannot be read starts an empty gallery,
     /// set aside first under [`BadLog::SetAside`].
     pub fn open(dir: &Path, policy: Policy) -> Self {
         let log = dir.join(LOG);
         let mut set_aside = None;
+        let mut read = true;
         let logged: Vec<Entry<X>> = match std::fs::read(&log) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                read = false;
                 if policy.on_bad_log == BadLog::SetAside {
                     let bad = dir.join(format!("{LOG}.bad"));
                     if std::fs::rename(&log, &bad).is_ok() {
@@ -296,23 +303,40 @@ impl<X: Serialize + DeserializeOwned> Gallery<X> {
                 }
                 Vec::new()
             }),
-            Err(_) => Vec::new(),
+            Err(e) => {
+                read = e.kind() == io::ErrorKind::NotFound;
+                Vec::new()
+            }
         };
         let thumbs = dir.join(THUMBS);
         let entries: Vec<Entry<X>> = match policy.missing {
             Missing::Keep => logged,
-            Missing::Drop => logged
-                .into_iter()
-                .filter(|e| {
+            Missing::Drop => {
+                let (kept, gone): (Vec<_>, Vec<_>) = logged.into_iter().partition(|e| {
                     e.path.exists() && e.thumb.as_ref().is_none_or(|t| thumbs.join(t).exists())
-                })
-                .collect(),
+                });
+                for e in &gone {
+                    if let Some(t) = &e.thumb {
+                        let _ = std::fs::remove_file(thumbs.join(t));
+                    }
+                }
+                kept
+            }
         };
-        if let Ok(listing) = std::fs::read_dir(&thumbs) {
+        // Another viewer writes its thumbnail before its log, so a young
+        // one no entry names yet is spared; with no log read, all are.
+        if let (true, Ok(listing)) = (read, std::fs::read_dir(&thumbs)) {
             let kept: std::collections::HashSet<&str> =
                 entries.iter().filter_map(|e| e.thumb.as_deref()).collect();
+            let old = |f: &std::fs::DirEntry| {
+                f.metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age.as_secs() >= ORPHAN_AGE)
+            };
             for f in listing.filter_map(Result::ok) {
-                if !kept.contains(f.file_name().to_string_lossy().as_ref()) {
+                if !kept.contains(f.file_name().to_string_lossy().as_ref()) && old(&f) {
                     let _ = std::fs::remove_file(f.path());
                 }
             }

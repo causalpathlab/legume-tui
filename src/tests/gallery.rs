@@ -103,6 +103,43 @@ fn an_unreadable_log_starts_an_empty_gallery() {
 }
 
 #[test]
+fn an_unreadable_log_leaves_the_thumbnails_be() {
+    let work = tempfile::tempdir().unwrap();
+    let store = work.path().join(".senna-view");
+    let a = file(work.path(), "a.pdf");
+    let mut g = open(&store);
+    add(&mut g, &a, "a", &picture(100, 100));
+    std::fs::write(store.join("saved.json"), b"not json").unwrap();
+    assert!(open(&store).entries().is_empty());
+    assert_eq!(thumbs(&store), 1);
+}
+
+#[test]
+fn a_thumbnail_not_yet_logged_is_spared_and_an_old_one_swept() {
+    let work = tempfile::tempdir().unwrap();
+    let store = work.path().join(".senna-view");
+    let a = file(work.path(), "a.pdf");
+    let mut g = open(&store);
+    add(&mut g, &a, "a", &picture(100, 100));
+    // Another viewer has just written its thumbnail, and not yet its log.
+    let theirs = store.join("thumbs").join("1.png");
+    thumb::write_png(&picture(10, 10), &theirs).unwrap();
+    assert_eq!(names(&open(&store)), ["a.pdf"]);
+    assert!(theirs.exists());
+    // One left behind long ago goes.
+    let old = SystemTime::now() - std::time::Duration::from_secs(2 * ORPHAN_AGE);
+    std::fs::File::options()
+        .write(true)
+        .open(&theirs)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    open(&store);
+    assert!(!theirs.exists());
+    assert_eq!(thumbs(&store), 1);
+}
+
+#[test]
 fn times_read_as_how_long_ago() {
     let now = 1_000_000;
     assert_eq!(ago(now - 20, now), "just now");
