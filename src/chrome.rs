@@ -210,23 +210,12 @@ pub fn page_window(
 /// is broken across rows of its own.
 #[must_use]
 pub fn wrapped_rows(text: &str, width: usize) -> usize {
-    let width = width.max(1);
-    let (mut rows, mut used) = (1, 0usize);
-    for word in text.split(' ') {
-        let n = word.chars().count();
-        let need = if used == 0 { n } else { used + 1 + n };
-        if need <= width {
-            used = need;
-        } else if n <= width {
-            rows += 1;
-            used = n;
-        } else {
-            // Broken across rows of its own.
-            rows += usize::from(used > 0) + (n - 1) / width;
-            used = n % width;
-        }
-    }
-    rows
+    // ratatui's own count, so a leading space and wide characters take
+    // the columns the paragraph gives them.
+    Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .line_count(u16::try_from(width.max(1)).unwrap_or(u16::MAX))
+        .max(1)
 }
 
 /// `s` in at most `n` characters, `…` marking a cut at the end.

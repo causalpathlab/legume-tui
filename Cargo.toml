@@ -34,7 +34,8 @@ testing = ["dep:tempfile", "dep:vt100"]
 map = ["dep:rayon", "dep:image", "dep:noto-sans-mono-bitmap", "dep:serde", "dep:serde_json", "dep:tempfile"]
 
 [dependencies]
-ratatui = "0.30"
+# `unstable-rendered-line-info`: a paragraph's wrapped row count, for popups.
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11.1", optional = true, default-features = false, features = ["crossterm"] }
 clap = { version = "4.5.20", optional = true, features = ["derive"] }
 tempfile = { version = "3.2", optional = true }

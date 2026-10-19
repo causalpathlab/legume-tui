@@ -50,6 +50,36 @@ fn wrapping_cuts_the_first_piece_and_the_rest_to_their_widths() {
 }
 
 #[test]
+fn wrapped_rows_count_a_leading_space_and_wide_characters_as_ratatui_wraps() {
+    // A space at the start of a row takes its column.
+    assert_eq!(wrapped_rows(&format!(" {}", "x".repeat(18)), 18), 2);
+    // Display width, not characters: each of these takes two columns.
+    assert_eq!(wrapped_rows("\u{6587}\u{4ef6}\u{540d}", 4), 2);
+}
+
+#[test]
+fn a_popup_keeps_its_keys_line_after_a_leading_space_line() {
+    let mut term = Terminal::new(TestBackend::new(20, 10)).unwrap();
+    term.draw(|f| {
+        let lines = vec![
+            Line::from(" title"),
+            Line::from(format!(" {}", "x".repeat(18))),
+            Line::from(" keys"),
+        ];
+        Chrome::TERMINAL.popup(f, f.area(), lines, 20, At::Middle);
+    })
+    .unwrap();
+    let shown: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(shown.contains("keys"), "{shown}");
+}
+
+#[test]
 fn wrapped_rows_count_words_and_break_long_ones() {
     assert_eq!(wrapped_rows("", 10), 1);
     assert_eq!(wrapped_rows("one two three", 9), 2);
