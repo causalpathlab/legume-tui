@@ -263,8 +263,7 @@ impl Listed {
         }
     }
 
-    /// Its label as said after its id (` (labelled work)`), or nothing:
-    /// `kill` keeps its `<id> stopped` whole.
+    /// Its label as said after its id (` (labelled work)`), or nothing.
     pub fn labelled(&self) -> String {
         self.label
             .as_ref()

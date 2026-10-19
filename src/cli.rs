@@ -408,7 +408,7 @@ pub fn kill(tool: &Tool, args: &KillArgs) -> io::Result<()> {
     let found = dir::pick(&dir, &tool.prefix(), args.name.as_deref())?;
     let path = dir::socket(&dir, &found.name);
     let patience = if args.force { FORCE_WAIT } else { STOP_WAIT };
-    // `<id> stopped` stays whole: tools and their tests read it.
+    // `<id> stopped` is one of the lines tools may read (README).
     let id = &found.name;
     let label = found.labelled();
     let waiting = || println!("waiting for {id}{label} to wrap up");
@@ -420,11 +420,12 @@ pub fn kill(tool: &Tool, args: &KillArgs) -> io::Result<()> {
             }
         }
         false if args.force => println!("{id}{label} was killed; its host has not closed yet"),
-        false => println!(
-            "asked {id}{label} to stop; it is still wrapping up (`{} kill --force {}` to end it now)",
-            tool.name(),
-            found.handle()
-        ),
+        false => {
+            let (name, handle) = (tool.name(), found.handle());
+            println!(
+                "asked {id}{label} to stop; it is still wrapping up (`{name} kill --force {handle}` to end it now)"
+            );
+        }
     }
     Ok(())
 }
