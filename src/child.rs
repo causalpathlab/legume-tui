@@ -4,7 +4,8 @@
 //!
 //! A child's stderr is a pseudo-terminal, so the progress bars it draws
 //! (indicatif hides them from a pipe) reach us: each frame becomes a
-//! [`Progress`], the rest are lines of its log.
+//! [`Progress`], the rest are lines of its log. [`Bar::track`] follows
+//! one bar through them, its score trend included, for [`gauge`] to draw.
 //!
 //! A child set up in a process group of its own ([`crate::Group::Own`])
 //! is stopped with what it started, and while a [`Stopper`] holds it a
@@ -33,6 +34,9 @@
 //! // On the quit key, or a `kill`: a save is let finish.
 //! stopper.quit();
 //! ```
+
+mod bar;
+pub use bar::{gauge, spark, Bar, TREND};
 
 use rustix::process::{kill_process, kill_process_group, Pid, Signal};
 use std::io::{self, Read};
@@ -273,10 +277,29 @@ impl Progress {
     /// word, as in `fit gap=0.412 recon=0.3` (a bare number, such as one in
     /// a label, is not a score). None while the message has none.
     pub fn score(&self) -> Option<f64> {
-        self.what.split_whitespace().find_map(|w| {
-            let (_, v) = w.split_once('=')?;
-            v.parse::<f64>().ok().filter(|v| v.is_finite())
-        })
+        scored(&self.what).map(|(_, v)| v)
+    }
+}
+
+/// The value of a `key=number` word.
+fn number(word: &str) -> Option<f64> {
+    word.split_once('=')?.1.parse().ok()
+}
+
+/// `what` up to and including its score word, and the score: the first
+/// finite `key=number` word ([`Progress::score`]).
+fn scored(what: &str) -> Option<(&str, f64)> {
+    let mut rest = what;
+    loop {
+        let word = rest.trim_start();
+        let end = word.find(char::is_whitespace).unwrap_or(word.len());
+        if end == 0 {
+            return None;
+        }
+        rest = &word[end..];
+        if let Some(v) = number(&word[..end]).filter(|v| v.is_finite()) {
+            return Some((&what[..what.len() - rest.len()], v));
+        }
     }
 }
 
