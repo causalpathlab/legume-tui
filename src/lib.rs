@@ -78,6 +78,8 @@ use plain::{dir, session_at, stop, Control};
 
 #[cfg(all(feature = "child", unix))]
 pub mod child;
+#[cfg(feature = "map")]
+pub mod chrome;
 #[cfg(feature = "clap")]
 pub mod cli;
 #[cfg(feature = "graphics")]
