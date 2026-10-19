@@ -29,8 +29,9 @@ child = ["dep:unicode-width"]
 # canned terminal answers and a model of the visible screen.
 testing = ["dep:tempfile", "dep:vt100"]
 # What the tools' map viewers share: colour, the page's theme, the
-# viewport between data and pixels, and the screen's chrome.
-map = []
+# viewport between data and pixels, the screen's chrome, and drawing a map:
+# points, text, labels a viewer can move, and keys.
+map = ["dep:rayon", "dep:image", "dep:noto-sans-mono-bitmap", "dep:serde", "dep:serde_json", "dep:tempfile"]
 
 [dependencies]
 ratatui = "0.30"
@@ -40,6 +41,11 @@ tempfile = { version = "3.2", optional = true }
 vt100 = { version = "0.16", optional = true }
 log = { version = "0.4", optional = true }
 unicode-width = { version = "0.2", optional = true }
+rayon = { version = "1.10", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+noto-sans-mono-bitmap = { version = "0.3", optional = true, default-features = false, features = ["regular", "bold", "size_16", "size_20", "size_24", "size_32", "unicode-basic-latin", "unicode-latin-1-supplement"] }
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
 
 # Pseudo-terminals, sessions and signals; Unix only.
 [target.'cfg(unix)'.dependencies]
