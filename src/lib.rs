@@ -82,6 +82,8 @@ pub mod child;
 pub mod chrome;
 #[cfg(feature = "clap")]
 pub mod cli;
+#[cfg(feature = "export")]
+pub mod export;
 #[cfg(feature = "graphics")]
 pub mod graphics;
 #[cfg(feature = "logs")]

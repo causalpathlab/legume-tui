@@ -36,6 +36,9 @@ map = ["dep:rayon", "dep:image", "dep:noto-sans-mono-bitmap", "dep:serde", "dep:
 # pixels, the thinnest line, and the frame fitted to an area. Apart from
 # `map` so a tool that only exports maps does not take the image protocols.
 map-display = ["map", "graphics"]
+# A map or a grid of them as a PDF page: the raster as one image, its text
+# set over it in Helvetica; page sizes, and `--pdf`, `--width`, `--dpi`.
+export = ["map", "dep:pdf-writer", "dep:miniz_oxide"]
 
 [dependencies]
 ratatui = "0.30"
@@ -50,6 +53,8 @@ image = { version = "0.25", optional = true, default-features = false, features 
 noto-sans-mono-bitmap = { version = "0.3", optional = true, default-features = false, features = ["regular", "bold", "size_16", "size_20", "size_24", "size_32", "unicode-basic-latin", "unicode-latin-1-supplement"] }
 serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
+pdf-writer = { version = "0.15", optional = true }
+miniz_oxide = { version = "0.8", optional = true }
 
 # Pseudo-terminals, sessions and signals; Unix only.
 [target.'cfg(unix)'.dependencies]
