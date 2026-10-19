@@ -564,6 +564,19 @@ Other wording may change.
   close with it, so a save that must outlive a hangup writes what it has
   first, logs to a file, or bears a failed write (Rust's `eprintln!`
   panics on one).
+- `map`: what the map viewers share. `map::colour`: linear light and
+  sRGB by table (every byte reads back as it was), OKLCH and OKLab, label
+  ink, `Categorical` palettes (`SENNA`, `PINTO_LIGHT`, `PINTO_DARK`, each
+  the colours its tool drew), 256-entry `Ramp`s (`viridis`, `magma`) and
+  a `diverging` colour. `map::theme::Theme`: the page, text, hint, ink and
+  muted colours with the groups' palette; `PAPER` is senna's page,
+  `LIGHT` and `DARK` pinto's, and `Theme::for_background` picks one for
+  the terminal's background. `map::viewport::Viewport`: a centre and
+  pixels per data unit, y up or down the screen (`YAxis`); `zoom_at`
+  (a factor above one zooms in) and `pan_px` stay within `Limits` (a
+  scale range, and `keep_inside` to stop panning past the data).
+  `chrome::Chrome`: page, hint and menu styles from a theme, or the
+  terminal's own with none, bordered popups, toasts and scrolled lists.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`
