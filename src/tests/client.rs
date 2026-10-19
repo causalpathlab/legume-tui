@@ -474,52 +474,50 @@ fn stop_signals_end_the_process_once_the_client_is_done() {
 
 // TEMPORARY diagnostics for macOS.
 #[test]
-fn diag_host_not_reading() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let Relay {
-        sock,
-        host: _host,
-        keys,
-        mut typing,
-        winch,
-        _winch_in,
-        stop,
-        stop_in: _stop_in,
-    } = Relay::new();
-    let count = std::sync::Arc::new(AtomicUsize::new(0));
-    let typed_count = std::sync::Arc::clone(&count);
-    std::thread::spawn(move || {
-        let chunk = [b'x'; 1 << 16];
-        for _ in 0..(8 << 20) / chunk.len() {
-            typing.write_all(&chunk).unwrap();
-            typed_count.fetch_add(chunk.len(), Ordering::SeqCst);
+fn diag_send_now_on_a_full_socket() {
+    for nonblocking in [false, true] {
+        for size in [512usize, 1 << 14, 1 << 16] {
+            let (a, b) = wire::pair().unwrap();
+            if nonblocking {
+                a.set_nonblocking(true).unwrap();
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let buf = vec![b'x'; size];
+                let mut sent = 0usize;
+                let mut calls = Vec::new();
+                for _ in 0..200 {
+                    let r = wire::send_now(&a, &buf);
+                    let tag = match &r {
+                        Ok(n) => {
+                            sent += n;
+                            format!("{n}")
+                        }
+                        Err(e) => format!("{:?}", e.kind()),
+                    };
+                    if calls.last() != Some(&tag) {
+                        calls.push(tag);
+                    }
+                    let _ = tx.send((sent, calls.clone(), false));
+                }
+                let _ = tx.send((sent, calls, true));
+                drop(a);
+            });
+            let mut last = None;
+            loop {
+                match rx.recv_timeout(Duration::from_secs(2)) {
+                    Ok(v) => {
+                        let done = v.2;
+                        last = Some(v);
+                        if done {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            eprintln!("DIAG nonblocking={nonblocking} size={size} -> {last:?}");
+            drop(b);
         }
-        typing.write_all(b"\x1b\x04").unwrap();
-        typed_count.fetch_add(2, Ordering::SeqCst);
-    });
-    let relay = std::thread::spawn(move || {
-        let mut screen = Scan::default();
-        relay(
-            &sock,
-            keys.as_fd(),
-            &mut Vec::new(),
-            &winch,
-            &stop,
-            &mut screen,
-        )
-    });
-    for s in 0..12 {
-        std::thread::sleep(Duration::from_secs(1));
-        eprintln!(
-            "DIAG t={s}s typed={} relay_finished={}",
-            count.load(Ordering::SeqCst),
-            relay.is_finished()
-        );
-        if relay.is_finished() {
-            break;
-        }
-    }
-    if relay.is_finished() {
-        eprintln!("DIAG relay ended: {:?}", relay.join());
     }
 }
