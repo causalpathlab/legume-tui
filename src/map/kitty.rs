@@ -1,6 +1,7 @@
 //! pinto's own ways of putting a map on screen: kitty graphics ([`Kitty`]),
 //! coloured block characters ([`cellart`]), and the `--graphics` choice
-//! between them and ratatui-image's protocols ([`MapGraphics`]).
+//! between them and ratatui-image's protocols ([`MapGraphics`]), resolved
+//! for a terminal to the one drawn with ([`Resolved`]).
 //!
 //! Kitty graphics show a frame as an image placed over a block of
 //! terminal cells. Frames alternate between two image ids. The new frame
@@ -49,6 +50,11 @@ const IDS: [u32; 2] = [0x7069_0001, 0x7069_0002];
 
 /// Base64 payload bytes per escape sequence (protocol limit is 4096).
 const CHUNK: usize = 4096;
+
+/// What a frame's temporary file is named with first: kitty deletes a
+/// file it has read only when its name says it is for it.
+/// `{FILE_PREFIX}-{tool}-{random}.rgba` ([`Kitty::named`]).
+pub const FILE_PREFIX: &str = "tty-graphics-protocol";
 
 /// Files kept per image id for the terminal to read.
 const KEEP: usize = 2;
@@ -101,7 +107,7 @@ impl Kitty {
     }
 
     /// Name the temporary files for `tool` (`legume` by default):
-    /// `tty-graphics-protocol-{tool}-{random}.rgba`.
+    /// `{FILE_PREFIX}-{tool}-{random}.rgba` ([`FILE_PREFIX`]).
     #[must_use]
     pub fn named(mut self, tool: &str) -> Self {
         self.tool = tool.into();
@@ -239,7 +245,7 @@ impl Kitty {
             }
         }
         let mut file = tempfile::Builder::new()
-            .prefix(&format!("tty-graphics-protocol-{}-", self.tool))
+            .prefix(&format!("{FILE_PREFIX}-{}-", self.tool))
             .suffix(".rgba")
             .tempfile_in(std::env::temp_dir())?;
         file.write_all(rgba)?;
@@ -265,7 +271,7 @@ impl Drop for Kitty {
 #[non_exhaustive]
 pub enum MapGraphics {
     /// Ask the terminal; quadrants when it has no graphics protocol, and
-    /// inside tmux.
+    /// inside tmux ([`MapGraphics::resolve`]).
     #[default]
     Auto,
     /// Kitty graphics; pixels go through a temp file, or inline when over
@@ -310,6 +316,76 @@ impl MapGraphics {
             Self::Symbols => Some(Glyphs::Symbols),
             Self::Blocks => Some(Glyphs::HalfBlocks),
             _ => None,
+        }
+    }
+
+    /// The drawing method this choice comes to on a terminal: inside tmux
+    /// or not (`tmux`, [`crate::graphics::in_tmux`]), whose picker took
+    /// `protocol` ([`crate::graphics::pick_protocol`] asked for
+    /// [`MapGraphics::protocol`]; half-blocks where it has no image
+    /// protocol), and to which kitty's pictures go by `transport`
+    /// ([`crate::graphics::kitty_transport`]).
+    ///
+    /// A named choice is taken as it is: kitty through tmux's passthrough
+    /// when in tmux, [`MapGraphics::KittyInline`] inline whatever
+    /// `transport` says. [`MapGraphics::Auto`] takes quadrants inside tmux
+    /// (which passes kitty graphics through only with `allow-passthrough`,
+    /// and then as best effort, while block characters always work) and
+    /// where there is no image protocol; kitty by `transport` where the
+    /// picker took kitty; else the picker's protocol.
+    #[must_use]
+    pub fn resolve(self, tmux: bool, protocol: ProtocolType, transport: Transport) -> Resolved {
+        let kitty = |transport| Resolved::Kitty { transport, tmux };
+        match self {
+            Self::Kitty => kitty(transport),
+            Self::KittyInline => kitty(Transport::Inline),
+            Self::Sixel => Resolved::Picker(ProtocolType::Sixel),
+            Self::Iterm2 => Resolved::Picker(ProtocolType::Iterm2),
+            Self::Quadrants => Resolved::Cells(Glyphs::Quadrants),
+            Self::Symbols => Resolved::Cells(Glyphs::Symbols),
+            Self::Blocks => Resolved::Cells(Glyphs::HalfBlocks),
+            Self::Auto if tmux => Resolved::Cells(Glyphs::Quadrants),
+            Self::Auto => match protocol {
+                ProtocolType::Kitty => kitty(transport),
+                ProtocolType::Halfblocks => Resolved::Cells(Glyphs::Quadrants),
+                p @ (ProtocolType::Sixel | ProtocolType::Iterm2) => Resolved::Picker(p),
+            },
+        }
+    }
+}
+
+/// How a map is drawn, once [`MapGraphics`] is resolved for a terminal
+/// ([`MapGraphics::resolve`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resolved {
+    /// Kitty graphics of the map's own ([`Kitty`]): `Kitty::new(transport)
+    /// .through_tmux(tmux)`.
+    Kitty { transport: Transport, tmux: bool },
+    /// The picker's pictures through ratatui-image: sixel or iTerm2.
+    Picker(ProtocolType),
+    /// Coloured block characters ([`cellart`]).
+    Cells(Glyphs),
+}
+
+impl Resolved {
+    /// The method's name as pinto shows it: `kitty (file)`,
+    /// `kitty (inline, tmux)`, `sixel`, `iterm2`, `quadrants`, ...
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Resolved::Kitty { transport, tmux } => match (transport, tmux) {
+                (Transport::File, false) => "kitty (file)",
+                (Transport::File, true) => "kitty (file, tmux)",
+                (Transport::Inline, false) => "kitty (inline)",
+                (Transport::Inline, true) => "kitty (inline, tmux)",
+            },
+            Resolved::Picker(p) => match p {
+                ProtocolType::Halfblocks => "halfblocks",
+                ProtocolType::Sixel => "sixel",
+                ProtocolType::Kitty => "kitty",
+                ProtocolType::Iterm2 => "iterm2",
+            },
+            Resolved::Cells(glyphs) => glyphs.name(),
         }
     }
 }
