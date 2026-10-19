@@ -263,6 +263,14 @@ impl Listed {
         }
     }
 
+    /// Its label as said after its id (` (labelled work)`), or nothing:
+    /// `kill` keeps its `<id> stopped` whole.
+    pub fn labelled(&self) -> String {
+        self.label
+            .as_ref()
+            .map_or_else(String::new, |l| format!(" (labelled {l})"))
+    }
+
     /// `attached` or `detached`.
     pub fn state(&self) -> &'static str {
         if self.attached {

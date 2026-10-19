@@ -203,9 +203,11 @@ fn listed_sessions_show_their_label_with_their_id() {
         (l.handle(), l.shown().as_str()),
         ("tool-view-1", "tool-view-1")
     );
+    assert_eq!(l.labelled(), "");
     l.label = Some("work".into());
     assert_eq!(l.handle(), "work");
     assert_eq!(l.shown(), "work (tool-view-1)");
+    assert_eq!(l.labelled(), " (labelled work)");
 }
 
 #[test]

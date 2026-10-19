@@ -79,6 +79,20 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.4
+
+- A session that cannot start (a socket path too long for the system, a
+  sessions directory open to other users) said why on stderr, and the
+  screen opening next covered it at once: the detach key then did
+  nothing, unexplained. The reason now names the key that does not
+  detach and how to run without trying (`LEGUME_TUI_NO_DETACH=1`), and
+  is said again as each screen closes, after anything the program left
+  (not after a panic).
+- `kill` also names a labelled session by its label, after its id:
+  `tool-view-1 stopped (labelled work)`, and likewise in its waiting and
+  `--force` lines. The `<id> stopped` that tools and their tests read
+  stays whole, as it will in later releases.
+
 ## 0.3.3
 
 - On macOS a socket whose peer has closed refuses socket options
