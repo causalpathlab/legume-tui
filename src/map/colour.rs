@@ -10,8 +10,10 @@
 //! palette, label ink, the activity ramp, its `Encoder` table as
 //! [`encode_senna`]) and pinto (`src/view/color.rs`:
 //! the decode and encode tables, its palettes, [`Ramp`], [`viridis`],
-//! [`magma`], [`diverging`] on pinto's own `oklab_to_srgb`). The maths is theirs, operation for
-//! operation, so each tool draws the colours it drew before.
+//! [`magma`], [`diverging`] on pinto's own `oklab_to_srgb`), and senna's
+//! heatmap colour in linear light as [`diverging_lin`] (`src/view/chart.rs`).
+//! The maths is theirs, operation for operation, so each tool draws the
+//! colours it drew before.
 
 use std::sync::LazyLock;
 
@@ -335,6 +337,17 @@ pub fn diverging(t: f32) -> Srgb {
     let (l, c) = (0.97 - 0.45 * t.abs(), 0.16 * t.abs());
     let hue = if t < 0. { 255. } else { 27. };
     oklch_pinto(l, c, hue).map(encode_exact)
+}
+
+/// [`diverging`] in linear light, for a chart blended in a frame: senna's
+/// heatmap colour (`src/view/chart.rs`), on [`oklch`]. Through [`to_srgb`]
+/// it is within a byte of [`diverging`].
+#[must_use]
+pub fn diverging_lin(t: f32) -> Lin {
+    let t = if t.is_finite() { t.clamp(-1., 1.) } else { 0. };
+    let a = t.abs();
+    let hue = if t < 0. { 255. } else { 27. };
+    oklch(0.97 - 0.45 * a, 0.16 * a, hue)
 }
 
 /// Sequential ramp for feature activity, light to deep, one hue family

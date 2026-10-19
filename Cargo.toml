@@ -42,6 +42,10 @@ export = ["map", "dep:pdf-writer", "dep:miniz_oxide"]
 # pinto's own ways of putting a map on screen: kitty graphics with two
 # images in turn, through a file or inline, and coloured block characters.
 map-kitty = ["map", "graphics", "dep:flate2", "dep:base64"]
+# Charts drawn as a map is: a structure plot of each row's mixture,
+# stacked bars in panels by group, and a heatmap of the top features by
+# their margin over the next group.
+chart = ["map"]
 
 [dependencies]
 ratatui = "0.30"

@@ -627,6 +627,22 @@ Other wording may change.
   among them and ratatui-image's protocols, with the protocol to ask for
   (`protocol`), the glyphs it names (`glyphs`), and the crate's
   `graphics::Graphics` where there is one.
+- `chart` (with `map`): charts drawn into a map's `Frame`.
+  `chart::structure::Layout::build` puts rows of mixture weights (`f32`
+  shares or `u8` of 255) into panels by group, rows with no group last,
+  and orders the components by prevalence; `bars` stacks them from the
+  bottom, a pixel column the renormalised sum of its rows, panels as wide
+  as their rows (`widths`), and `Drawn::at` finds the panel and component
+  under a pixel. `figure` draws them in senna's panel widths
+  (`senna_widths`) with its title, panel names (turned when one is too
+  wide) and key; `name_rows` sets panel names in terminal
+  rows. `chart::heatmap::by_margin` takes each group's top features by
+  their lead over the next group (by level with one group), `candidates`
+  and `top_by_margin` choose in two stages, `zscore_rows` scales rows,
+  and `draw_heat` draws senna's heatmap with its ramp key (`HeatLayout::at`
+  for clicks); `thumbnail` and `tsv` are pinto's. `chart::note` and
+  `chart::step_top` serve both; `map::colour::diverging_lin` is the
+  heatmap colour in linear light.
 - `testing`: `testing::Private` and `testing::Term`, a harness that drives
   a tool's TUI through pseudo-terminals in its tests, its sessions in a
   private directory killed with it. `Private::term_with(args, env, setup)`
