@@ -510,3 +510,197 @@ fn a_thumbnail_s_pixels_are_pinned() {
     let f = thumbnail(&z, 3, None, 2, &Theme::LIGHT, 1.0);
     assert_eq!(fnv(f.to_image().as_raw()), 0x99b0_f59d_455e_18a5);
 }
+
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) as usize
+    }
+    fn below(&mut self, n: usize) -> usize {
+        self.next() % n
+    }
+    fn name(&mut self, most: usize) -> String {
+        const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+        (0..1 + self.below(most))
+            .map(|_| ABC[self.below(ABC.len())] as char)
+            .collect()
+    }
+}
+
+/// A run's box: `x0, y0, x1, y1`.
+fn run_box(r: &crate::map::text::TextRun) -> [f32; 4] {
+    if r.vertical {
+        [r.x, r.y - r.w, r.x + r.line, r.y]
+    } else {
+        [r.x, r.y, r.x + r.w, r.y + r.line]
+    }
+}
+
+/// Why `runs` do not sit in a `w × h` frame each apart from the others,
+/// if they do not.
+fn runs_apart(runs: &[crate::map::text::TextRun], w: usize, h: usize) -> Result<(), String> {
+    let boxes: Vec<[f32; 4]> = runs.iter().map(run_box).collect();
+    for (r, b) in runs.iter().zip(&boxes) {
+        if b[0] < 0.0 || b[1] < 0.0 || b[2] > w as f32 || b[3] > h as f32 {
+            return Err(format!("{:?} at {b:?} leaves {w} × {h}", r.text));
+        }
+    }
+    for (i, a) in boxes.iter().enumerate() {
+        for (j, b) in boxes.iter().enumerate().skip(i + 1) {
+            if a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3] {
+                return Err(format!("{:?} over {:?}", runs[i].text, runs[j].text));
+            }
+        }
+    }
+    Ok(())
+}
+
+struct RandomHeat {
+    title: String,
+    rows: Vec<String>,
+    cols: Vec<String>,
+    z: Vec<f32>,
+    clip: f32,
+    bold_row: Option<usize>,
+    style: HeatStyle,
+    cell_px: f32,
+}
+
+impl RandomHeat {
+    fn new(g: &mut Lcg) -> Self {
+        let (n, m) = (1 + g.below(30), 1 + g.below(12));
+        let theme = Theme::PAPER;
+        let mut style = HeatStyle::for_theme(&theme);
+        style.row_chars = 4 + g.below(20);
+        style.col_chars = 4 + g.below(20);
+        style.key = g.below(3) > 0;
+        Self {
+            title: g.name(60),
+            rows: (0..n).map(|_| g.name(28)).collect(),
+            cols: (0..m).map(|_| g.name(28)).collect(),
+            z: (0..n * m).map(|i| (i % 7) as f32 - 3.0).collect(),
+            clip: [2.5, 3.0, 1.0, 10.125, 100.0][g.below(5)],
+            bold_row: (g.below(2) == 0).then(|| g.below(n)),
+            style,
+            cell_px: [16.0, 20.0, 24.0, 33.0, 40.0][g.below(5)],
+        }
+    }
+
+    fn heat(&self) -> Heat<'_> {
+        Heat {
+            title: &self.title,
+            rows: &self.rows,
+            cols: &self.cols,
+            col_swatch: None,
+            z: &self.z,
+            clip: self.clip,
+            bold_row: self.bold_row,
+        }
+    }
+
+    fn font(&self) -> Font {
+        Font::for_cell_height(self.cell_px, false)
+    }
+
+    /// Why drawing at `w × h` does not show every name and the key, a line
+    /// per row and column, all inside the frame, if it does not.
+    fn shows_all(&self, w: usize, h: usize) -> Result<(), String> {
+        let theme = Theme::PAPER;
+        let mut f = Frame::blank(w, h, PAGE);
+        f.keep_text();
+        let l = draw_heat(
+            &mut f,
+            &self.heat(),
+            self.font(),
+            Font::for_cell_height(self.cell_px, true),
+            &theme,
+            &self.style,
+        )?;
+        if l.cell.0 < l.line || l.cell.1 < l.line {
+            return Err(format!("cells of {:?} under a line of {}", l.cell, l.line));
+        }
+        let runs = f.take_text();
+        let said: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+        let cut = |s: &String, n: usize| s.chars().take(n).collect::<String>();
+        let mut want: Vec<String> = self
+            .rows
+            .iter()
+            .map(|r| cut(r, self.style.row_chars))
+            .chain(self.cols.iter().map(|c| cut(c, self.style.col_chars)))
+            .collect();
+        if self.style.key {
+            want.extend([
+                format!("+{}", self.clip),
+                "0".into(),
+                format!("-{}", self.clip),
+                "z".into(),
+            ]);
+        }
+        let mut have: Vec<&str> = said[1..].to_vec();
+        for name in &want {
+            match have.iter().position(|s| s == name) {
+                Some(i) => {
+                    have.swap_remove(i);
+                }
+                None => return Err(format!("{name:?} not drawn")),
+            }
+        }
+        runs_apart(&runs, w, h)
+    }
+}
+
+#[test]
+fn heat_size_is_the_least_frame_that_shows_every_name_and_the_key() {
+    let mut g = Lcg(7);
+    for case in 0..120 {
+        let r = RandomHeat::new(&mut g);
+        let min_w = [0, 100, 900][g.below(3)];
+        let (w, h) = heat_size(&r.heat(), r.font(), &r.style, min_w);
+        let at = |w, h| {
+            r.shows_all(w, h)
+                .map_err(|e| format!("case {case} at {w} × {h}: {e}"))
+        };
+        at(w, h).unwrap();
+        assert!(w >= min_w);
+        if w > min_w {
+            assert!(
+                at(w - 1, h).is_err(),
+                "case {case}: {w} - 1 still shows all"
+            );
+        }
+        assert!(
+            at(w, h - 1).is_err(),
+            "case {case}: {h} - 1 still shows all"
+        );
+    }
+}
+
+#[test]
+fn heat_size_of_senna_s_heatmap() {
+    // GENE1..6 under 16 px lines: six rows and four columns a line each,
+    // the title (83 characters) setting the width.
+    let (rows, cols, z) = senna_heat();
+    let heat = Heat {
+        title: TITLE,
+        rows: &rows,
+        cols: &cols,
+        col_swatch: None,
+        z: &z,
+        clip: CLIP,
+        bold_row: None,
+    };
+    let theme = Theme::PAPER;
+    let s = HeatStyle::for_theme(&theme);
+    let font = Font::for_cell_height(16.0, false);
+    let (w, h) = heat_size(&heat, font, &s, 0);
+    assert_eq!(w, 8 + 83 * 7);
+    // Two lines over the cells, six lines of them, then the band of the
+    // column names: three characters and half a line.
+    assert_eq!(h, 2 * 16 + 6 * 16 + 3 * 7 + 8);
+    assert_eq!(heat_size(&heat, font, &s, 1000), (1000, h));
+}

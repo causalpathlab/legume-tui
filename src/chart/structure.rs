@@ -18,7 +18,7 @@
 //! map; [`figure`] draws senna's whole chart around them. Hits are kept as
 //! per-column cuts ([`Drawn::at`]) instead of pinto's map of every pixel.
 
-use super::note;
+use super::{least, note};
 use crate::map::colour::{to_linear, Lin};
 use crate::map::raster::Frame;
 use crate::map::text::{self, Font};
@@ -457,12 +457,114 @@ pub struct Figure<'a> {
     pub theme: &'a Theme,
 }
 
+/// The key's names, by place in the stack; none without a key.
+fn key_names<'a>(l: &Layout, fig: &Figure<'a>) -> Vec<&'a str> {
+    fig.key.map_or_else(Vec::new, |k| {
+        l.stack
+            .iter()
+            .map(|&c| k.get(c).map_or("", String::as_str))
+            .collect()
+    })
+}
+
+/// Where a [`figure`]'s parts go in a `w × h` frame: the bars' box, their
+/// panels' widths, the key's width at the right, and whether panel names
+/// turn and the band they take under the bars.
+struct FigureGeom {
+    lh: usize,
+    rect: [usize; 4],
+    room: Vec<usize>,
+    key_w: usize,
+    turned: bool,
+    label_h: usize,
+    /// The widest panel name drawn.
+    widest: usize,
+}
+
+impl FigureGeom {
+    fn new(w: usize, h: usize, l: &Layout, s: &BarStyle, fig: &Figure, keys: &[&str]) -> Self {
+        let font = fig.font;
+        let lh = font.line_height();
+        let adv = font.advance();
+        // Right: one line per component; bottom: panel names, turned when long.
+        let key_w = (keys.iter().map(|n| n.chars().count()).max().unwrap_or(2) + 3) * adv;
+        let right = if fig.key.is_some() {
+            key_w + lh
+        } else {
+            lh / 2
+        };
+        let (x0, y0) = (lh / 2, if fig.title.is_some() { 2 * lh } else { lh / 2 });
+        let x1 = w.saturating_sub(right);
+        let sizes: Vec<usize> = l.panels.iter().map(|p| p.rows.len()).collect();
+        let room = senna_widths(&sizes, x1.saturating_sub(x0), s.gap);
+        let widest = l
+            .panels
+            .iter()
+            .map(|p| p.name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(NAME_CHARS)
+            * adv;
+        let turned = match fig.names {
+            Names::Auto => l
+                .panels
+                .iter()
+                .zip(&room)
+                .any(|(p, &w)| font.width(&p.name) + adv > w),
+            Names::Turned => true,
+            Names::Horizontal | Names::None => false,
+        };
+        let label_h = match fig.names {
+            Names::None => lh / 2,
+            _ if turned => (widest + lh / 2).min(h / 3),
+            _ => lh + lh / 2,
+        };
+        let y1 = h.saturating_sub(label_h);
+        Self {
+            lh,
+            rect: [x0, y0, x1, y1],
+            room,
+            key_w,
+            turned,
+            label_h,
+            widest,
+        }
+    }
+
+    /// High enough for bars, every key row, and turned names inside their
+    /// band.
+    fn fits_down(&self, h: usize, keys: usize, names: Names) -> bool {
+        let [_, y0, _, y1] = self.rect;
+        y1 > y0 + 4
+            && y0 + keys * self.lh <= h
+            && (names == Names::None || !self.turned || self.label_h >= self.widest + self.lh / 4)
+    }
+}
+
+/// The height [`figure`] needs at `width`: the least in which it draws its
+/// bars, every key row, and every panel's name (turned or not, as
+/// [`Names`] decides at that width) under the bars, inside the frame.
+/// Turned names take a band held to a third of the height. The width is
+/// the caller's: a title or names wider than it are not made to fit.
+#[must_use]
+pub fn figure_size(l: &Layout, s: &BarStyle, fig: &Figure, width: usize) -> usize {
+    let keys = key_names(l, fig);
+    let g = FigureGeom::new(width, 0, l, s, fig, &keys);
+    let lh = g.lh;
+    let low = g.rect[1] + 5;
+    let high = 3 * (low + g.widest + lh + keys.len() * lh);
+    least(low, high, |h| {
+        FigureGeom::new(width, h, l, s, fig, &keys).fits_down(h, keys.len(), fig.names)
+    })
+}
+
 /// The whole chart: the title in bold at the top left, the bars in
 /// panels of [`senna_widths`], panel names under them (cut to
 /// [`NAME_CHARS`]) and the key at the right, in the theme's text colour.
 /// Text is kept as text when the frame keeps it. Too small for bars, it
 /// says so in a note and nothing is drawn. Bars stop at the key when
 /// panels given a pixel they had no room for would pass it.
+/// [`figure_size`] is the height that shows all of it at a width.
 pub fn figure<W: Copy + Into<f32>>(
     frame: &mut Frame,
     l: &Layout,
@@ -474,7 +576,6 @@ pub fn figure<W: Copy + Into<f32>>(
     let ink = to_linear(fig.theme.text);
     let font = fig.font;
     let lh = font.line_height();
-    let adv = font.advance();
     if let Some(title) = fig.title {
         text::draw(
             frame,
@@ -486,49 +587,15 @@ pub fn figure<W: Copy + Into<f32>>(
             bg,
         );
     }
-    // Right: one line per component; bottom: panel names, turned when long.
-    let keys: Vec<&str> = fig.key.map_or_else(Vec::new, |k| {
-        l.stack
-            .iter()
-            .map(|&c| k.get(c).map_or("", String::as_str))
-            .collect()
-    });
-    let key_w = (keys.iter().map(|n| n.chars().count()).max().unwrap_or(2) + 3) * adv;
-    let right = if fig.key.is_some() {
-        key_w + lh
-    } else {
-        lh / 2
-    };
-    let (x0, y0) = (lh / 2, if fig.title.is_some() { 2 * lh } else { lh / 2 });
-    let x1 = frame.w.saturating_sub(right);
-    let sizes: Vec<usize> = l.panels.iter().map(|p| p.rows.len()).collect();
-    let room = senna_widths(&sizes, x1.saturating_sub(x0), s.gap);
-    let widest = l
-        .panels
-        .iter()
-        .map(|p| p.name.chars().count())
-        .max()
-        .unwrap_or(0);
-    let turned = match fig.names {
-        Names::Auto => l
-            .panels
-            .iter()
-            .zip(&room)
-            .any(|(p, &w)| font.width(&p.name) + adv > w),
-        Names::Turned => true,
-        Names::Horizontal | Names::None => false,
-    };
-    let label_h = match fig.names {
-        Names::None => lh / 2,
-        _ if turned => (widest.min(NAME_CHARS) * adv + lh / 2).min(frame.h / 3),
-        _ => lh + lh / 2,
-    };
-    let y1 = frame.h.saturating_sub(label_h);
+    let keys = key_names(l, fig);
+    let g = FigureGeom::new(frame.w, frame.h, l, s, fig, &keys);
+    let (key_w, turned, label_h, room) = (g.key_w, g.turned, g.label_h, &g.room);
+    let [x0, y0, x1, y1] = g.rect;
     if y1 <= y0 + 4 || x1 <= x0 + 4 {
         note(frame, "too small to draw", font, fig.theme);
         return Drawn::empty([x0, y0, x1, y1]);
     }
-    let drawn = bars_in(frame, [x0, y0, x1, y1], l, w, s, &room);
+    let drawn = bars_in(frame, [x0, y0, x1, y1], l, w, s, room);
     // Each panel's name under it.
     if fig.names != Names::None {
         for sp in &drawn.spans {

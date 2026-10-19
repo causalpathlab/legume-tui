@@ -21,11 +21,12 @@
 //! two or more groups pinto's one pass of peaks gives what senna's
 //! `pick_top(own_peaks(margins))` gives.
 
-use super::note;
+use super::{least, note};
 use crate::map::colour::{diverging, diverging_lin, to_linear, to_srgb, Lin, Srgb};
 use crate::map::raster::Frame;
 use crate::map::text::{self, Font};
 use crate::map::theme::Theme;
+use noto_sans_mono_bitmap::FontWeight;
 
 /// Largest |z| drawn; beyond it colours saturate.
 pub const CLIP: f32 = 2.5;
@@ -289,11 +290,134 @@ impl HeatLayout {
     }
 }
 
+/// The key's labels: the ramp's top, middle and bottom, and what it is.
+fn key_labels(clip: f32) -> [String; 4] {
+    [
+        format!("+{clip}"),
+        "0".into(),
+        format!("-{clip}"),
+        "z".into(),
+    ]
+}
+
+/// Where a heatmap's parts go in a `w × h` frame: the cells' box
+/// `x0, y0, x1, y1`, the key's width at the right and the column names'
+/// band under the cells, held to a third of the height.
+struct HeatGeom {
+    lh: usize,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+    key_w: usize,
+    /// The widest column name drawn.
+    col_label: usize,
+    /// The title's width, in bold.
+    title_w: usize,
+}
+
+impl HeatGeom {
+    fn new(w: usize, h: usize, heat: &Heat, font: Font, s: &HeatStyle) -> Self {
+        let lh = font.line_height();
+        let adv = font.advance();
+        let longest = |names: &[String], most: usize| {
+            names
+                .iter()
+                .map(|n| n.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(most)
+                * adv
+        };
+        let name_w = longest(heat.rows, s.row_chars);
+        let col_label = longest(heat.cols, s.col_chars);
+        // Room for the swatch and the widest label beside it.
+        let key_w = if s.key {
+            let label = key_labels(heat.clip)
+                .iter()
+                .map(|l| font.width(l))
+                .max()
+                .unwrap_or(0);
+            (6 * adv + lh).max(lh / 2 + adv / 2 + label)
+        } else {
+            0
+        };
+        let (x0, y0) = (lh / 2 + name_w + adv, 2 * lh);
+        let x1 = w.saturating_sub(key_w + lh);
+        let y1 = h.saturating_sub((col_label + lh / 2).min(h / 3));
+        let bold = Font {
+            weight: FontWeight::Bold,
+            ..font
+        };
+        Self {
+            lh,
+            x0,
+            y0,
+            x1,
+            y1,
+            key_w,
+            col_label,
+            title_w: bold.width(heat.title),
+        }
+    }
+
+    /// Wide enough for the title, a line per column and the key.
+    fn fits_across(&self, w: usize, cols: usize) -> bool {
+        self.lh / 2 + self.title_w <= w
+            && self.x1 >= self.x0 + cols * self.lh
+            && self.x1 > self.x0 + cols
+    }
+
+    /// High enough for a line per row, the key's labels a line apart
+    /// (four lines of cells), and the column names under the cells.
+    fn fits_down(&self, h: usize, rows: usize, key: bool) -> bool {
+        let cells = if key { rows.max(4) } else { rows } * self.lh;
+        self.y1 >= self.y0 + cells
+            && self.y1 > self.y0 + 4
+            && self.y1 + self.lh / 4 + self.col_label <= h
+    }
+}
+
+/// The smallest frame, at least `min_w` wide, in which [`draw_heat`] shows
+/// the whole title, every row's name, every column's name and the key, all
+/// inside the frame and none over another: a line of cells per row and
+/// per column, the key's labels a line apart, and the column names' band,
+/// held to a third of the height, deep enough for the longest. The title
+/// is measured in the bold of `font`.
+///
+/// With no rows or columns, room for the title and the note that says so.
+#[must_use]
+pub fn heat_size(h: &Heat, font: Font, s: &HeatStyle, min_w: usize) -> (usize, usize) {
+    let (rows, cols) = (h.rows.len(), h.cols.len());
+    let lh = font.line_height();
+    let g = HeatGeom::new(0, 0, h, font, s);
+    if rows == 0 || cols == 0 {
+        let w = (lh / 2 + g.title_w).max(lh + font.width(NOTHING));
+        return (w.max(min_w), 2 * lh);
+    }
+    // Across and down are apart: the width moves only `x1`, the height
+    // only `y1`.
+    let wide = (g.x0 + cols * lh + g.key_w + lh)
+        .max(lh / 2 + g.title_w)
+        .max(min_w);
+    let w = least(wide, wide + lh, |w| {
+        HeatGeom::new(w, 0, h, font, s).fits_across(w, cols)
+    });
+    let cells = if s.key { rows.max(4) } else { rows } * lh;
+    let low = g.y0 + cells + lh / 4 + g.col_label;
+    let high = 3 * (g.y0 + cells + g.col_label + lh);
+    let h_px = least(low, high, |hh| {
+        HeatGeom::new(0, hh, h, font, s).fits_down(hh, rows, s.key)
+    });
+    (w, h_px)
+}
+
 /// A heatmap: the title in bold, a cell per row and column in the
 /// diverging colour of `z / clip` ([`cell_colour_lin`]), row names at the left (as many as fit a
 /// line each), column names turned under the columns, and the ramp from
 /// `+clip` to `-clip` at the right, in the theme's text colour. Text is
-/// kept as text when the frame keeps it.
+/// kept as text when the frame keeps it. [`heat_size`] is the least frame
+/// that shows all of it.
 ///
 /// # Errors
 /// With no rows or columns, or too little room, a note says so where the
@@ -316,23 +440,8 @@ pub fn draw_heat(
         note(frame, NOTHING, font, theme);
         return Err(NOTHING);
     }
-    let longest = |names: &[String], most: usize| {
-        names
-            .iter()
-            .map(|n| n.chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(most)
-            * adv
-    };
-    let name_w = longest(h.rows, s.row_chars);
-    let col_label = longest(h.cols, s.col_chars);
-    let key_w = if s.key { 6 * adv + lh } else { 0 };
-    let (x0, y0) = (lh / 2 + name_w + adv, 2 * lh);
-    let x1 = frame.w.saturating_sub(key_w + lh);
-    let y1 = frame
-        .h
-        .saturating_sub((col_label + lh / 2).min(frame.h / 3));
+    let g = HeatGeom::new(frame.w, frame.h, h, font, s);
+    let (x0, y0, x1, y1, key_w) = (g.x0, g.y0, g.x1, g.y1, g.key_w);
     if x1 <= x0 + cols || y1 <= y0 + 4 {
         note(frame, TOO_SMALL, font, theme);
         return Err(TOO_SMALL);
@@ -401,11 +510,12 @@ pub fn draw_heat(
         }
         let label_x = (kx + lh / 2 + adv / 2) as i32;
         let half = lh as i32 / 2;
+        let [top, mid, low, z] = key_labels(h.clip);
         for (s, y) in [
-            (format!("+{}", h.clip), ka as i32 - half),
-            ("0".to_string(), ((ka + kb) / 2) as i32 - half),
-            (format!("-{}", h.clip), kb as i32 - half),
-            ("z".to_string(), y0 as i32 - half),
+            (top, ka as i32 - half),
+            (mid, ((ka + kb) / 2) as i32 - half),
+            (low, kb as i32 - half),
+            (z, y0 as i32 - half),
         ] {
             text::draw(frame, font, &s, label_x, y, ink, bg);
         }

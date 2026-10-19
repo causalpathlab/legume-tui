@@ -819,3 +819,233 @@ fn name_rows_alternate_and_never_overlap() {
     assert_eq!(one, ["first-p secon "]);
     assert_eq!(name_rows(&spans, 14, 10.0, 0), Vec::<String>::new());
 }
+
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) as usize
+    }
+    fn below(&mut self, n: usize) -> usize {
+        self.next() % n
+    }
+    fn name(&mut self, most: usize) -> String {
+        const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+        (0..1 + self.below(most))
+            .map(|_| ABC[self.below(ABC.len())] as char)
+            .collect()
+    }
+}
+
+struct RandomFigure {
+    title: Option<String>,
+    key: Option<Vec<String>>,
+    names: Names,
+    cell_px: f32,
+    width: usize,
+    theta: Vec<f32>,
+    groups: Vec<u32>,
+    levels: Vec<String>,
+    k: usize,
+}
+
+impl RandomFigure {
+    fn new(g: &mut Lcg) -> Self {
+        let (k, n_groups) = (1 + g.below(12), 1 + g.below(5));
+        let n = n_groups * (2 + g.below(10));
+        let cell_px = [16.0, 20.0, 24.0, 40.0][g.below(4)];
+        let lh = Font::for_cell_height(cell_px, false).line_height();
+        Self {
+            title: (g.below(3) > 0).then(|| g.name(20)),
+            key: (g.below(3) > 0).then(|| (0..k).map(|_| g.name(8)).collect()),
+            names: [
+                Names::Auto,
+                Names::Auto,
+                Names::Horizontal,
+                Names::Turned,
+                Names::None,
+            ][g.below(5)],
+            cell_px,
+            width: lh * (30 + g.below(30)),
+            theta: (0..n * k).map(|_| 1.0 + g.below(9) as f32).collect(),
+            groups: (0..n).map(|i| (i % n_groups) as u32).collect(),
+            levels: (0..n_groups).map(|_| g.name(30)).collect(),
+            k,
+        }
+    }
+
+    fn weights(&self) -> Weights<'_, f32> {
+        Weights {
+            k: self.k,
+            w: &self.theta,
+            valid: None,
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::build(
+            &self.weights(),
+            &Grouping {
+                of: &self.groups,
+                names: &self.levels,
+                order: None,
+            },
+        )
+    }
+
+    fn figure(&self) -> Figure<'_> {
+        Figure {
+            title: self.title.as_deref(),
+            key: self.key.as_deref(),
+            names: self.names,
+            font: Font::for_cell_height(self.cell_px, false),
+            bold: Font::for_cell_height(self.cell_px, true),
+            theme: &Theme::PAPER,
+        }
+    }
+
+    fn style(&self) -> BarStyle<'static> {
+        BarStyle {
+            palette: &[[0.5; 3]; 12],
+            focus: None,
+            gap: GAP,
+            hits: false,
+        }
+    }
+
+    /// Why the figure drawn `h` high does not show its bars, every key row
+    /// and every panel's name inside the frame and clear of the bars, if
+    /// it does not.
+    fn shows_all(&self, h: usize) -> Result<(), String> {
+        let l = self.layout();
+        let mut f = Frame::blank(self.width, h, PAGE);
+        f.keep_text();
+        let d = figure(&mut f, &l, &self.weights(), &self.style(), &self.figure());
+        let runs = f.take_text();
+        if d.spans.is_empty() {
+            return Err("no bars".into());
+        }
+        let bottom = d.rect[3] as f32;
+        for r in &runs {
+            let (top, low) = if r.vertical {
+                (r.y - r.w, r.y)
+            } else {
+                (r.y, r.y + r.line)
+            };
+            if top < 0.0 || low > h as f32 {
+                return Err(format!("{:?} at {top}..{low} leaves {h}", r.text));
+            }
+        }
+        let said: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+        if let Some(key) = &self.key {
+            for &c in &l.stack {
+                if !said.contains(&key[c].as_str()) {
+                    return Err(format!("key {:?} not drawn", key[c]));
+                }
+            }
+        }
+        if self.names != Names::None {
+            for p in &l.panels {
+                let shown: String = p.name.chars().take(NAME_CHARS).collect();
+                let Some(r) = runs.iter().find(|r| r.text == shown) else {
+                    return Err(format!("{shown:?} not drawn"));
+                };
+                let top = if r.vertical { r.y - r.w } else { r.y };
+                if top < bottom {
+                    return Err(format!("{shown:?} at {top} over the bars to {bottom}"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn figure_size_is_the_least_height_that_shows_the_title_key_and_names() {
+    let mut g = Lcg(11);
+    for case in 0..200 {
+        let r = RandomFigure::new(&mut g);
+        let h = figure_size(&r.layout(), &r.style(), &r.figure(), r.width);
+        let at = |h| {
+            r.shows_all(h)
+                .map_err(|e| format!("case {case} at {h}: {e}"))
+        };
+        at(h).unwrap();
+        assert!(at(h - 1).is_err(), "case {case}: {h} - 1 still shows all");
+    }
+}
+
+#[test]
+fn figure_size_of_senna_s_figure() {
+    let (theta, groups) = even();
+    let w = Weights {
+        k: 3,
+        w: &theta,
+        valid: None,
+    };
+    let key = names(&["T0", "T1", "T2"]);
+    let style = BarStyle {
+        palette: &PALETTE,
+        focus: None,
+        gap: GAP,
+        hits: true,
+    };
+    let fig = |key| Figure {
+        title: Some("topic mixture per cell"),
+        key,
+        names: Names::Auto,
+        font: Font::for_cell_height(16.0, false),
+        bold: Font::for_cell_height(16.0, true),
+        theme: &Theme::PAPER,
+    };
+    for (panels, key, want) in [
+        // Names across: two lines over the bars, five pixels of bars and
+        // a line and a half of names; three key rows from the top need more.
+        (["CT1", "CT2"], Some(&key[..]), 2 * 16 + 3 * 16),
+        (["CT1", "CT2"], None, 2 * 16 + 5 + 24),
+        // Turned: the band, held to a third of the height, holds 18
+        // characters and a quarter of a line.
+        (["A-LONG-PANEL-NAME-ONE-TWO", "CT2"], None, 3 * (18 * 7 + 4)),
+    ] {
+        let levels = names(&panels);
+        let l = Layout::build(
+            &w,
+            &Grouping {
+                of: &groups,
+                names: &levels,
+                order: None,
+            },
+        );
+        assert_eq!(figure_size(&l, &style, &fig(key), 301), want, "{panels:?}");
+    }
+    // Eight key rows outgrow the rest.
+    let k8 = names(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+    let theta8: Vec<f32> = (0..8 * 8).map(|i| (i % 5) as f32 + 1.0).collect();
+    let w8 = Weights {
+        k: 8,
+        w: &theta8,
+        valid: None,
+    };
+    let levels = names(&["CT1", "CT2"]);
+    let l = Layout::build(
+        &w8,
+        &Grouping {
+            of: &groups,
+            names: &levels,
+            order: None,
+        },
+    );
+    let pal = [[0.5; 3]; 8];
+    let style8 = BarStyle {
+        palette: &pal,
+        ..style
+    };
+    assert_eq!(
+        figure_size(&l, &style8, &fig(Some(&k8)), 301),
+        2 * 16 + 8 * 16
+    );
+}

@@ -25,6 +25,11 @@ pub fn note(frame: &mut Frame, s: &str, font: Font, theme: &Theme) {
     text::draw(frame, font, s, lh, lh, to_linear(theme.text), bg);
 }
 
+/// The least of `from..=to` that is `ok`, or `to`.
+fn least(from: usize, to: usize, ok: impl Fn(usize) -> bool) -> usize {
+    (from..=to).find(|&v| ok(v)).unwrap_or(to)
+}
+
 /// How [`step_top`] steps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
