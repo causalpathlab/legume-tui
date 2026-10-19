@@ -134,7 +134,22 @@ fn a_typed_extension_is_dropped_and_home_expanded() {
     assert_eq!(stem_of("t.tsv", &["tsv", "txt"]), "t");
     let home = std::env::var("HOME").unwrap();
     assert_eq!(stem_of("~/a/fig.png", &exts), format!("{home}/a/fig"));
-    assert_eq!(stem_of("~", &exts), home.trim_end_matches('/'));
+    // Home alone is a folder: it keeps its slash, so it asks for a name.
+    let folder = format!("{}/", home.trim_end_matches('/'));
+    assert_eq!(stem_of("~", &exts), folder);
+    assert_eq!(stem_of("~/", &exts), folder);
+}
+
+#[test]
+fn a_name_that_is_a_folder_asks_for_a_file_name() {
+    let (_dir, v) = viewer(1);
+    let mut d = SaveDialog::new(&v, Scope::View, Numbering::Suffix);
+    d.key(key(KeyCode::Backspace), &v);
+    for c in v.dir.to_string_lossy().chars() {
+        d.key(key(KeyCode::Char(c)), &v);
+    }
+    assert!(matches!(d.key(key(KeyCode::Enter), &v), SaveKey::Open));
+    assert_eq!(d.status(), Some("type a file name"));
 }
 
 /// A viewer with one view, or with several to put in a grid.

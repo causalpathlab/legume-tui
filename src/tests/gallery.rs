@@ -475,3 +475,19 @@ const LUPIN: &str = r#"[
     ]
   }
 ]"#;
+
+#[test]
+fn a_borrowed_frame_is_shown_without_an_owned_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let img = picture(40, 20);
+    let view = thumb::Picture::new(40, 20, img.as_raw()).unwrap();
+    assert_eq!(thumb::shrink(view, 10), thumb::shrink(&img, 10));
+    assert!(
+        thumb::Picture::new(40, 21, img.as_raw()).is_none(),
+        "too few bytes"
+    );
+    let mut g = open(dir.path());
+    let f = file(dir.path(), "a.pdf");
+    g.add_view(&[&f], "a view", Some(view), ()).unwrap();
+    assert!(g.thumb(&g.entries()[0]).is_some_and(|t| t.exists()));
+}
