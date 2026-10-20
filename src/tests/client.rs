@@ -217,7 +217,7 @@ fn the_last_frame_finishes_one_begun_and_drops_what_waits() {
     // As a flush that sent the head alone leaves it.
     wire::send_all(&sock, &wire::frame(wire::INPUT, b"begun")[..wire::HEAD]).unwrap();
     outbox.sent = wire::HEAD;
-    outbox.last(&sock, wire::HEARD).unwrap();
+    outbox.heard(&sock).unwrap();
     drop(sock);
     assert_eq!(
         wire::read_frame(&mut host).unwrap(),
@@ -307,12 +307,22 @@ fn a_lone_escape_goes_on_while_output_keeps_coming() {
     busy.join().unwrap();
 }
 
-/// The relay over a pipe for the keys: what it ends with after `typed`.
-fn relay_ends(typed: &[u8]) -> Outcome {
+/// The relay over a pipe for the keys: what it ends with after `typed`,
+/// the host letting it go once it has read it all, as a host does, or
+/// (`held`) never.
+fn relay_ends(typed: &[u8], held: bool) -> Outcome {
     let mut r = Relay::new();
     r.typing.write_all(typed).unwrap();
+    let mut host = r.host;
+    let host = std::thread::spawn(move || {
+        if held {
+            std::thread::sleep(LEAVE_WAIT + Duration::from_secs(2));
+        } else {
+            typed_to_the_end(&mut host);
+        }
+    });
     let mut screen = Scan::default();
-    relay(
+    let ended = relay(
         &r.sock,
         r.keys.as_fd(),
         &mut Vec::new(),
@@ -320,15 +330,106 @@ fn relay_ends(typed: &[u8]) -> Outcome {
         &r.stop,
         &mut screen,
     )
-    .unwrap()
+    .unwrap();
+    // Unheld, the host has let go by now.
+    if !held {
+        host.join().unwrap();
+    }
+    ended
+}
+
+/// What the host at `host` reads as typed, to the end of the stream (or
+/// of the last whole frame).
+fn typed_to_the_end(host: &mut UnixStream) -> Vec<u8> {
+    wire::set_timeout(host, true, Some(Duration::from_secs(5))).unwrap();
+    let mut typed = Vec::new();
+    while let Ok(Some((tag, body))) = wire::read_frame(host) {
+        if tag == wire::INPUT {
+            typed.extend(body);
+        }
+    }
+    typed
+}
+
+/// A key typed with the detach key goes to the host before the client
+/// leaves, behind a backlog its socket does not take at once: the host
+/// reads only once the client has read every key, the detach key last.
+#[test]
+fn a_key_typed_with_the_detach_key_reaches_the_host() {
+    use rustix::net::sockopt;
+    let Relay {
+        sock,
+        mut host,
+        keys,
+        mut typing,
+        winch,
+        _winch_in,
+        stop,
+        stop_in: _stop_in,
+    } = Relay::new();
+    // A few KiB at most between the two, so most of the backlog is still
+    // the client's when the key comes.
+    sockopt::set_socket_send_buffer_size(&sock, 4096).unwrap();
+    sockopt::set_socket_recv_buffer_size(&host, 4096).unwrap();
+    let backlog = 64 << 10;
+    let typist = std::thread::spawn(move || {
+        typing.write_all(&vec![b'x'; backlog]).unwrap();
+        typing.write_all(b"y\x1b\x04").unwrap();
+    });
+    let unread = keys.try_clone().unwrap();
+    let relay = Relay::spawn(sock, keys, winch, stop);
+    typist.join().unwrap();
+    let start = Instant::now();
+    while rustix::io::ioctl_fionread(&unread).unwrap() > 0 {
+        assert!(start.elapsed() < Duration::from_secs(5), "keys unread");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let typed = typed_to_the_end(&mut host);
+    drop(host);
+    assert_eq!(relay.join().unwrap(), Outcome::Detached);
+    assert_eq!(typed.len(), backlog + 1);
+    assert!(typed.ends_with(b"xy"));
+}
+
+/// Leaving on the key, the client waits for the host to let it go (to
+/// shut its side, once it has read all the client sent), but no longer
+/// than [`LEAVE_WAIT`] for one that does not.
+#[test]
+fn leaving_waits_for_the_host_to_let_go_within_a_bound() {
+    let Relay {
+        sock,
+        mut host,
+        keys,
+        mut typing,
+        winch,
+        _winch_in,
+        stop,
+        stop_in: _stop_in,
+    } = Relay::new();
+    let relay = Relay::spawn(sock, keys, winch, stop);
+    typing.write_all(b"y\x1b\x04").unwrap();
+    // To the end: the client has shut its side.
+    assert_eq!(typed_to_the_end(&mut host), b"y");
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!relay.is_finished(), "gone before the host let it go");
+    drop(host);
+    assert_eq!(relay.join().unwrap(), Outcome::Detached);
+    // A host that never lets go.
+    let start = Instant::now();
+    assert_eq!(relay_ends(b"\x1b\x04", true), Outcome::Detached);
+    let took = start.elapsed();
+    assert!(
+        took >= LEAVE_WAIT && took < LEAVE_WAIT + Duration::from_secs(2),
+        "{took:?}"
+    );
 }
 
 #[test]
 fn the_keys_end_the_relay_as_a_detach_or_a_switch() {
-    assert_eq!(relay_ends(b"\x1b\x04"), Outcome::Detached);
-    assert_eq!(relay_ends(b"\x1b[100;7u"), Outcome::Detached);
-    assert_eq!(relay_ends(b"\x1b\x13"), Outcome::Switch);
-    assert_eq!(relay_ends(b"\x1b[115;7u"), Outcome::Switch);
+    assert_eq!(relay_ends(b"\x1b\x04", false), Outcome::Detached);
+    assert_eq!(relay_ends(b"\x1b[100;7u", false), Outcome::Detached);
+    assert_eq!(relay_ends(b"\x1b\x13", false), Outcome::Switch);
+    assert_eq!(relay_ends(b"\x1b[115;7u", false), Outcome::Switch);
 }
 
 /// A pseudo-terminal pair in line mode: the user's side to type on, and
@@ -470,4 +571,18 @@ fn stop_signals_end_the_process_once_the_client_is_done() {
             String::from_utf8_lossy(&out.stdout)
         );
     }
+}
+
+/// A wait for the socket stops at its deadline, whatever is ready.
+#[test]
+fn a_wait_for_the_host_stops_at_its_deadline() {
+    use rustix::event::PollFlags;
+    let (a, b) = wire::pair().unwrap();
+    wire::send_all(&b, b"x").unwrap();
+    assert!(!ready_by(&a, PollFlags::IN, Instant::now()));
+    assert!(ready_by(
+        &a,
+        PollFlags::IN,
+        Instant::now() + Duration::from_secs(1)
+    ));
 }

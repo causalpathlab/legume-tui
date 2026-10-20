@@ -4,11 +4,13 @@
 //! detach by the key, an unnamed session is offered a label; after the
 //! switch key, the picker chooses the session to go on with.
 //!
-//! The client never waits on the host to take what is typed: it is held,
+//! The client does not wait on the host to take what is typed: it is held,
 //! up to a bound past which the oldest goes, while the relay goes on
 //! reading the terminal, so the detach key works whatever the program
-//! does. It follows the alternate screen through the output it relays, so
-//! it leaves that screen at the end only if it is in it.
+//! does. Leaving on the detach or switch key, it sends what is still held
+//! first and waits for the host to let it go, for at most [`LEAVE_WAIT`].
+//! It follows the alternate screen through the output it relays, so it
+//! leaves that screen at the end only if it is in it.
 
 use crate::chord::{Action, Chord, Key};
 use crate::scan::Scan;
@@ -55,6 +57,11 @@ const PENDING: usize = 1 << 20;
 /// How long saying the program's end was taken ([`wire::HEARD`]) may
 /// wait for room: as long as the host waits to hear it.
 const HEARD_WAIT: Duration = Duration::from_secs(1);
+/// How long leaving on the detach or switch key waits, all told, to send
+/// what was typed before the key and for the host to let the client go
+/// ([`leave`]): the host reads at once while it runs, and a host not
+/// reading holds the key up no longer than this.
+const LEAVE_WAIT: Duration = Duration::from_millis(250);
 
 /// How a client's time with the session ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -187,9 +194,10 @@ impl Drop for Woken {
     }
 }
 
-/// Frames for the host, sent as fast as it takes them and never waited
-/// for. Past [`PENDING`] bytes the oldest typed input goes; the frame
-/// being sent, and sizes, stay.
+/// Frames for the host, sent as fast as it takes them, and waited for
+/// only on the way out ([`Outbox::drain`]), for a bounded time. Past
+/// [`PENDING`] bytes the oldest typed input goes; the frame being sent,
+/// and sizes, stay.
 #[derive(Default)]
 struct Outbox {
     /// Each frame's tag, and the frame as it goes on the wire.
@@ -215,41 +223,120 @@ impl Outbox {
         }
     }
 
-    /// Send what the socket takes now.
-    fn flush(&mut self, sock: &UnixStream) -> io::Result<()> {
+    /// Send what the socket takes now. A host gone is not an error here:
+    /// what it sent last is still read, and the end of that says it went
+    /// ([`Outcome::Lost`]), or how the program ended.
+    fn flush(&mut self, sock: &UnixStream) {
+        let _ = self.send_now(sock);
+    }
+
+    /// [`Self::flush`], saying when the host is gone.
+    fn send_now(&mut self, sock: &UnixStream) -> io::Result<()> {
         while let Some((_, frame)) = self.frames.front() {
             match wire::send_now(sock, &frame[self.sent..]) {
-                Ok(n) => self.sent += n,
+                Ok(n) => self.advance(n),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(e) => return Err(e),
             }
-            if self.sent == frame.len() {
-                self.bytes -= frame.len();
-                self.sent = 0;
-                self.frames.pop_front();
-            }
         }
         Ok(())
+    }
+
+    /// Send everything waiting, the rest of a frame begun first, waiting
+    /// for room until `deadline` at the latest.
+    fn drain(&mut self, sock: &UnixStream, deadline: Instant) -> io::Result<()> {
+        loop {
+            self.send_now(sock)?;
+            if self.is_empty() {
+                return Ok(());
+            }
+            if !ready_by(sock, rustix::event::PollFlags::OUT, deadline) {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+        }
+    }
+
+    /// `n` more bytes of the first frame went; it goes once all of it has.
+    fn advance(&mut self, n: usize) {
+        self.sent += n;
+        if self
+            .frames
+            .front()
+            .is_some_and(|(_, f)| self.sent == f.len())
+        {
+            self.bytes -= self.sent;
+            self.sent = 0;
+            self.frames.pop_front();
+        }
     }
 
     fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
 
-    /// Send a last frame, `tag` with no body, after the rest of any frame
-    /// begun (what waits behind it, typed for a program that has ended,
-    /// is dropped), waiting for room as long as `sock`'s write timeout
-    /// lets it.
-    fn last(&mut self, sock: &UnixStream, tag: u8) -> io::Result<()> {
-        let mut out = match self.frames.pop_front() {
-            Some((_, begun)) if self.sent > 0 => begun[self.sent..].to_vec(),
-            _ => Vec::new(),
+    /// Say [`wire::HEARD`], after the rest of any frame begun (what waits
+    /// behind it, typed for a program that has ended, is dropped), waiting
+    /// for room for at most [`HEARD_WAIT`].
+    fn heard(&mut self, sock: &UnixStream) -> io::Result<()> {
+        // A frame begun is finished; what waits behind it goes.
+        self.frames.truncate(usize::from(self.sent > 0));
+        self.bytes = self.frames.front().map_or(0, |(_, f)| f.len());
+        self.push(wire::HEARD, &[]);
+        self.drain(sock, Instant::now() + HEARD_WAIT)
+    }
+}
+
+/// Wait for `sock` to be ready for `flags` until `deadline`; false once
+/// it has passed, or if the wait fails. A signal (a resize) waits again,
+/// for the time left.
+fn ready_by(sock: &UnixStream, flags: rustix::event::PollFlags, deadline: Instant) -> bool {
+    use rustix::event::{poll, PollFd, Timespec};
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        let Ok(left) = Timespec::try_from(left) else {
+            return false;
         };
-        self.frames.clear();
-        self.sent = 0;
-        self.bytes = 0;
-        out.extend_from_slice(&wire::frame(tag, &[]));
-        wire::send_all(sock, &out)
+        let mut fds = [PollFd::new(sock, flags)];
+        match poll(&mut fds, Some(&left)) {
+            Ok(0) => return false,
+            Ok(_) => return true,
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Whether a signal to stop has come on `stop`, without waiting.
+fn signalled(stop: &UnixStream) -> bool {
+    use rustix::event::{poll, PollFd, PollFlags, Timespec};
+    let mut fds = [PollFd::new(stop, PollFlags::IN)];
+    let now = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    poll(&mut fds, Some(&now)).is_ok_and(|n| n > 0)
+}
+
+/// Leave the host in order, within [`LEAVE_WAIT`] all told: what
+/// `outbox` still holds goes first, then our side is shut and the host's
+/// waited for, what it still sends dropped (read into `buf`). The host
+/// shuts its side once it has read all this client sent and let it go,
+/// so a client attaching after (the switch key) does not attach over
+/// this one, and the keys it typed last still go.
+fn leave(outbox: &mut Outbox, sock: &UnixStream, buf: &mut [u8]) {
+    let deadline = Instant::now() + LEAVE_WAIT;
+    let _ = outbox.drain(sock, deadline);
+    let _ = sock.shutdown(std::net::Shutdown::Write);
+    while ready_by(sock, rustix::event::PollFlags::IN, deadline) {
+        match rustix::io::read(sock, &mut *buf) {
+            Ok(0) => return,
+            Ok(_) | Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN) => {}
+            // Cut off.
+            Err(_) => return,
+        }
     }
 }
 
@@ -331,7 +418,7 @@ fn relay(
             let held = chord.flush();
             held_since = None;
             outbox.push(wire::INPUT, &held);
-            outbox.flush(sock)?;
+            outbox.flush(sock);
             continue;
         }
         let timeout = wait.and_then(|w| Timespec::try_from(w).ok());
@@ -357,11 +444,13 @@ fn relay(
         let (keys, resized, stopped) = (ready(0), ready(2), ready(3));
         let socket = fds[1].revents();
         if stopped {
+            // What was typed before still goes.
+            leave(&mut outbox, sock, &mut buf);
             return Ok(Outcome::Stopped);
         }
 
         if socket.contains(PollFlags::OUT) {
-            outbox.flush(sock)?;
+            outbox.flush(sock);
         }
         if !(socket - PollFlags::OUT).is_empty() {
             let open = inbox.fill(sock).unwrap_or(false);
@@ -387,10 +476,8 @@ fn relay(
                         });
                         // Taken: the host keeps it for a later look if
                         // this is not heard.
-                        // Waiting for room, as long as the timeout lets it.
-                        let _ = sock.set_nonblocking(false);
-                        let _ = wire::set_timeout(sock, false, Some(HEARD_WAIT));
-                        let _ = outbox.last(sock, wire::HEARD);
+                        // Waiting for room, as long as HEARD_WAIT lets it.
+                        let _ = outbox.heard(sock);
                         break;
                     }
                     Ok(Some((wire::ELSEWHERE, _))) => {
@@ -418,29 +505,39 @@ fn relay(
             while rustix::io::read(winch, &mut [0u8; 64]).is_ok_and(|n| n > 0) {}
             if let Ok(size) = Size::of(io::stdout()) {
                 outbox.push(wire::RESIZE, &size.encode());
-                outbox.flush(sock)?;
+                outbox.flush(sock);
             }
         }
         if keys {
             let n = match rustix::io::read(stdin, &mut buf) {
-                // The terminal is gone (a dropped connection): the session
-                // carries on without us.
-                Ok(0) => return Ok(Outcome::Stopped),
-                Ok(n) => n,
+                Ok(n) if n > 0 => n,
                 Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN) => continue,
-                Err(_) => return Ok(Outcome::Stopped),
+                // The terminal is gone (a dropped connection): the session
+                // carries on without us, what was typed before with it.
+                _ => {
+                    leave(&mut outbox, sock, &mut buf);
+                    return Ok(Outcome::Stopped);
+                }
             };
             let (pass, action) = chord.feed(&buf[..n]);
             // Whatever is held now is new.
             held_since = None;
             if !pass.is_empty() {
                 outbox.push(wire::INPUT, &pass);
-                outbox.flush(sock)?;
+                outbox.flush(sock);
             }
-            match action {
-                Some(Action::Detach) => return Ok(Outcome::Detached),
-                Some(Action::Switch) => return Ok(Outcome::Switch),
-                None => {}
+            if let Some(action) = action {
+                // What was typed before the key goes first, and the host
+                // has it all before a switch attaches again.
+                leave(&mut outbox, sock, &mut buf);
+                // Told to stop while it left: that, not the key.
+                if signalled(stop) {
+                    return Ok(Outcome::Stopped);
+                }
+                return Ok(match action {
+                    Action::Detach => Outcome::Detached,
+                    Action::Switch => Outcome::Switch,
+                });
             }
         }
     }

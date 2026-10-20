@@ -765,3 +765,151 @@ fn a_socket_whose_peer_has_closed_is_read_and_written_as_one_gone() {
     assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
     assert_eq!(wire::read_frame(&mut a).unwrap(), None);
 }
+
+/// Typed by a client that attached at `takeovers` takeovers.
+fn typed(takeovers: u64) -> Typed {
+    Typed {
+        takeovers,
+        bytes: b"y".to_vec(),
+    }
+}
+
+/// What a client typed goes whenever the program reads it, after the
+/// client has gone and across a later attach that is not over it; not
+/// once another attached over the one attached, nor after the end.
+#[test]
+fn typed_keys_go_until_a_takeover_or_the_end() {
+    let gate = Gate::default();
+    let first = typed(gate.attach(false));
+    assert!(gate.admits(first.takeovers), "attached");
+    // It leaves; another attaches after, not over it.
+    let second = typed(gate.attach(false));
+    assert!(
+        gate.admits(first.takeovers),
+        "its client gone, another attached after"
+    );
+    assert!(
+        gate.admits(second.takeovers),
+        "attached after one that left"
+    );
+    // A third attaches over the second: what is queued from before goes.
+    let third = typed(gate.attach(true));
+    assert!(!gate.admits(second.takeovers), "taken over");
+    assert!(!gate.admits(first.takeovers), "typed before a takeover");
+    assert!(gate.admits(third.takeovers), "the one that took over");
+    gate.ended.store(true, SeqCst);
+    assert!(!gate.admits(third.takeovers), "the program has ended");
+}
+
+/// The host's status once it has ended: a regression fails here, with the
+/// program killed, rather than hanging.
+fn ended(done: std::thread::JoinHandle<i32>, path: &Path) -> i32 {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(done.join());
+    });
+    match rx.recv_timeout(WAIT) {
+        Ok(code) => code.unwrap(),
+        Err(_) => {
+            let _ = dir::stop(path, true, WAIT);
+            panic!("the host never ended");
+        }
+    }
+}
+
+/// A host whose program reads a line only once the test makes `go` in
+/// `out`, and writes it to `got` there; a client attached, that has typed
+/// "y" the program has not read.
+fn typed_unread() -> (tempfile::TempDir, Running, UnixStream) {
+    let out = tempfile::tempdir().unwrap();
+    let (go, got) = (out.path().join("go"), out.path().join("got"));
+    let mut h = host(&format!(
+        "until [ -e {} ]; do sleep 0.01; done; read x; echo \"$x\" > {}",
+        go.display(),
+        got.display()
+    ));
+    let mut c = attach_now(&h.path);
+    h.wait_told(&[ATTACHED]);
+    input(&mut c, b"y\n");
+    (out, h, c)
+}
+
+/// Let the program read, and wait until it has read the key.
+fn read_now(out: &tempfile::TempDir) {
+    std::fs::write(out.path().join("go"), "").unwrap();
+    let got = out.path().join("got");
+    let start = Instant::now();
+    while std::fs::read_to_string(&got).unwrap_or_default() != "y\n" {
+        assert!(start.elapsed() < WAIT, "the program never read the key");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A key and then the detach key, sent at once, with the program not yet
+/// reading: the key reaches it after the client has gone.
+#[test]
+fn a_key_typed_just_before_a_detach_reaches_the_program() {
+    let (out, mut h, c) = typed_unread();
+    drop(c);
+    h.wait_told(&[DETACHED]);
+    read_now(&out);
+    assert_eq!(ended(h.done, &h.path), 0);
+}
+
+/// A client leaving in order, as the client does on the detach or switch
+/// key: its key sent, its side shut, the host's waited for. One attaching
+/// at once after it (the switch key) does not attach over it, the program
+/// hears the one leave before the other comes, and the key reaches it.
+#[test]
+fn a_key_from_a_client_that_left_in_order_outlasts_the_next_attach() {
+    let (out, mut h, mut c) = typed_unread();
+    c.shutdown(std::net::Shutdown::Write).unwrap();
+    // The host shuts its side once it has read all this client sent.
+    wire::set_timeout(&c, true, Some(WAIT)).unwrap();
+    c.read_to_end(&mut Vec::new()).unwrap();
+    let _next = attach_now(&h.path);
+    h.wait_told(&[DETACHED, ATTACHED]);
+    assert_eq!(h.shared.gate.takeovers.load(SeqCst), 0, "attached over it");
+    read_now(&out);
+    assert_eq!(ended(h.done, &h.path), 0);
+}
+
+/// Once the program has ended, what the host's threads share goes, the
+/// input relay's channel with it, so that thread ends too.
+#[test]
+fn a_host_that_ended_frees_what_its_threads_share() {
+    let mut h = host("read x");
+    let mut c = attach_now(&h.path);
+    h.wait_told(&[ATTACHED]);
+    input(&mut c, b"\n");
+    drop(c);
+    let shared = Arc::downgrade(&h.shared);
+    // Held by the input relay alone once the rest has gone.
+    let gate = Arc::downgrade(&h.shared.gate);
+    drop(h.shared);
+    ended(h.done, &h.path);
+    let start = Instant::now();
+    while shared.strong_count() > 0 || gate.strong_count() > 0 {
+        assert!(start.elapsed() < WAIT, "still held");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A client cut off for stalling counts as one attached over: what it
+/// typed and is still queued goes no further, while one attaching after
+/// it types on.
+#[test]
+fn a_client_cut_off_counts_as_attached_over() {
+    let mut h = host("read x");
+    let _stalled = attach_now(&h.path);
+    h.wait_told(&[ATTACHED]);
+    let id = h.shared.current.load(SeqCst);
+    let before = typed(h.shared.gate.attach(false));
+    h.shared.drop_client(id, true);
+    h.wait_told(&[DETACHED]);
+    assert!(!h.shared.gate.admits(before.takeovers), "cut off");
+    let mut next = attach_now(&h.path);
+    h.wait_told(&[ATTACHED]);
+    input(&mut next, b"\n");
+    assert_eq!(ended(h.done, &h.path), 0);
+}
