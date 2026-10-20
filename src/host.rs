@@ -178,13 +178,16 @@ impl Queue {
 struct Shared {
     client: Mutex<Option<Client>>,
     /// The attached client's number, 0 for none, read without the lock.
-    current: Arc<AtomicU64>,
+    current: AtomicU64,
+    /// Whether what was typed still goes, shared with the input relay.
+    gate: Arc<Gate>,
     next: AtomicU64,
     /// Our end of the pty, for its size and its foreground process group.
     pty: File,
-    /// Typed bytes for the pty, with the number of the client that typed
-    /// them.
-    input: SyncSender<(u64, Vec<u8>)>,
+    /// Typed bytes for the pty, each chunk stamped with its client's
+    /// [`Gate::takeovers`] count. Its only sender: the input relay ends as
+    /// this goes.
+    input: SyncSender<Typed>,
     /// The writing end of the control channel, non-blocking.
     control: OwnedFd,
     /// TUIs started by the program that follow the attach state, and
@@ -226,18 +229,31 @@ impl Shared {
         });
     }
 
-    /// Let the current client go, if it is still `id`, and say so.
-    fn drop_client(&self, id: u64) {
-        let mut c = self.client.lock().unwrap_or_else(|e| e.into_inner());
-        if c.as_ref().is_some_and(|c| c.id == id) {
-            if let Some(gone) = c.take() {
-                self.current.store(0, SeqCst);
-                gone.out.close();
-                let _ = gone.sock.shutdown(std::net::Shutdown::Both);
+    /// Let the current client go, if it is still `id`, and say so. Only
+    /// our side is shut: shutting the reading side too would drop what it
+    /// sent and is not read yet (on macOS and the BSDs), its last keys
+    /// among it, and it closes on seeing ours shut, which ends the read. A
+    /// client that may not close (stalled) is cut off by its writer, and
+    /// (`cut_off`) counts as attached over: what it typed and is still
+    /// queued, or not read yet, goes no further.
+    fn drop_client(&self, id: u64, cut_off: bool) {
+        let gone = {
+            let mut c = self.client.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(gone) = c.take_if(|c| c.id == id) else {
+                return;
+            };
+            self.current.store(0, SeqCst);
+            if cut_off {
+                self.gate.takeovers.fetch_add(1, SeqCst);
             }
-            drop(c);
+            // Under the lock, before its socket is shut: no client can
+            // attach and be heard of first (a client leaving in order,
+            // [`crate::client`], attaches again only after the shut).
             self.tell(DETACHED);
-        }
+            gone
+        };
+        gone.out.close();
+        let _ = gone.sock.shutdown(std::net::Shutdown::Write);
     }
 
     /// The pty's size, as the program will see it.
@@ -377,16 +393,20 @@ impl Host {
         // Our copies of the program's ends close, so its end is the end.
         drop(program);
         drop(theirs);
-        let current = Arc::new(AtomicU64::new(0));
         let (input, typed) = sync_channel(IN_QUEUE);
+        let gate = Arc::new(Gate::default());
         {
+            // Given the gate alone, not what the threads share: that holds
+            // the channel's only sender, which closes, and the thread ends,
+            // as it goes.
             let pty = master.try_clone()?;
-            let current = Arc::clone(&current);
-            std::thread::spawn(move || relay_input(pty, &typed, &current));
+            let gate = Arc::clone(&gate);
+            std::thread::spawn(move || relay_input(pty, &typed, &gate));
         }
         let shared = Arc::new(Shared {
             client: Mutex::new(None),
-            current,
+            current: AtomicU64::new(0),
+            gate,
             next: AtomicU64::new(1),
             pty: master.try_clone()?,
             input,
@@ -455,6 +475,8 @@ impl Host {
                 Err(_) => break 1,
             }
         };
+        // What is still queued for the program goes nowhere.
+        self.shared.gate.ended.store(true, SeqCst);
         // What it wrote last reaches the client first; something it left
         // behind holding the terminal open does not hold us up for long.
         let _ = self.drained.recv_timeout(LAST_WORDS);
@@ -577,32 +599,86 @@ fn relay_output(master: File, shared: &Shared) {
     }
 }
 
-/// Write what is typed to the pty, if whoever typed it is still the
-/// client. A program not reading holds up only this thread.
-fn relay_input(mut pty: File, typed: &Receiver<(u64, Vec<u8>)>, current: &AtomicU64) {
-    for (id, bytes) in typed {
-        if current.load(SeqCst) == id {
-            let _ = pty.write_all(&bytes);
+/// Whether what was typed still goes to the program: what the input relay
+/// needs of the attach state, apart from [`Shared`] so that thread does
+/// not keep it alive.
+#[derive(Default)]
+struct Gate {
+    /// How many times a client has attached over another: what was typed
+    /// before and is still queued goes no further.
+    takeovers: AtomicU64,
+    /// The program has ended: nothing typed goes any more.
+    ended: AtomicBool,
+}
+
+impl Gate {
+    /// Count a client attaching, over another or not: the count what it
+    /// types is stamped with. Called under the lock that makes it current.
+    fn attach(&self, over_another: bool) -> u64 {
+        if over_another {
+            self.takeovers.fetch_add(1, SeqCst) + 1
+        } else {
+            self.takeovers.load(SeqCst)
+        }
+    }
+
+    /// Whether what a client attached at `takeovers` types goes to the
+    /// program: if no client has attached over another since, and the
+    /// program runs. Whether that client is still attached does not
+    /// count: keys it sent before it left go whenever the program reads
+    /// them, as type-ahead does in a terminal.
+    fn admits(&self, takeovers: u64) -> bool {
+        !self.ended.load(SeqCst) && self.takeovers.load(SeqCst) == takeovers
+    }
+}
+
+/// Bytes a client typed, with the [`Gate::takeovers`] count it attached
+/// at.
+struct Typed {
+    takeovers: u64,
+    bytes: Vec<u8>,
+}
+
+/// Write what is typed to the pty while the [`Gate`] admits it as the
+/// relay takes it (a chunk taken may still be written after, if the program is not
+/// reading). A program not reading holds up only this thread.
+fn relay_input(mut pty: File, typed: &Receiver<Typed>, gate: &Gate) {
+    for t in typed {
+        if gate.admits(t.takeovers) {
+            let _ = pty.write_all(&t.bytes);
         }
     }
 }
 
 /// Send a client its frames, in order, until its queue closes; one it
-/// cannot take within [`STALL`] is let go. True if every frame went out;
-/// then only our side is shut, so its answer ([`wire::HEARD`]) can still
-/// be read.
+/// cannot take within [`STALL`] is let go. True if every frame went out.
+/// Then, and when the client has gone, only our side is shut: what it
+/// sent before is still read (its last keys, its answer
+/// [`wire::HEARD`]), and our side shut is how a client leaving in order
+/// knows the host has it all. One stalled is cut off both ways.
 fn relay_to_client(sock: UnixStream, frames: Arc<Queue>, id: u64, shared: Arc<Shared>) -> bool {
+    // Our side only, as [`Shared::drop_client`] says; but one stalled may
+    // never close: cut off, so its reader ends now, and what it typed
+    // goes no further.
+    let mut how = std::net::Shutdown::Write;
+    let mut ok = true;
     while let Some(frame) = frames.pop() {
-        if wire::send_all(&sock, &frame).is_err() {
-            shared.drop_client(id);
-            frames.close();
-            let _ = sock.shutdown(std::net::Shutdown::Both);
-            return false;
+        if let Err(e) = wire::send_all(&sock, &frame) {
+            let stalled = matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            );
+            shared.drop_client(id, stalled);
+            if stalled {
+                how = std::net::Shutdown::Both;
+            }
+            ok = false;
+            break;
         }
     }
     frames.close();
-    let _ = sock.shutdown(std::net::Shutdown::Write);
-    true
+    let _ = sock.shutdown(how);
+    ok
 }
 
 /// One connection: a question, a kill, a watcher, or a client attaching.
@@ -665,9 +741,12 @@ fn attach(mut conn: UnixStream, hello: &[u8], shared: &Arc<Shared>) {
     // Applied only once this client is the one attached.
     let mut size = Size::decode(&hello[1..]);
     let env = wire::hello_env(hello);
-    let mut id = None;
+    // Once attached: this client's id, and the [`Gate::takeovers`] count
+    // it attached at.
+    let mut attached: Option<(u64, u64)> = None;
     while let Ok(Some((tag, body))) = wire::read_frame(&mut conn) {
-        let current = id.is_some() && shared.current.load(SeqCst) == id.unwrap_or(0);
+        let id = attached.map(|(me, _)| me);
+        let current = id.is_some_and(|me| shared.current.load(SeqCst) == me);
         match tag {
             wire::READY if id.is_none() => {
                 let Ok(writer) = conn.try_clone() else { break };
@@ -700,6 +779,9 @@ fn attach(mut conn: UnixStream, hello: &[u8], shared: &Arc<Shared>) {
                             out.push(wire::frame(wire::OUTPUT, &early), || true);
                         }
                     }
+                    // Over another: what that one typed and is still queued
+                    // goes no further. Counted before this one is current.
+                    attached = Some((me, shared.gate.attach(c.is_some())));
                     shared.current.store(me, SeqCst);
                     // Under the lock that makes it current, so the file is
                     // the current client's when two attach at once.
@@ -718,20 +800,32 @@ fn attach(mut conn: UnixStream, hello: &[u8], shared: &Arc<Shared>) {
                     // closes it. Output waiting for room there gives up.
                     old.out.finish(wire::frame(wire::ELSEWHERE, &[]));
                 }
-                id = Some(me);
                 // After the environment is written: the program reads it as
                 // it repaints.
                 shared.tell(ATTACHED);
                 shared.wake();
             }
-            wire::INPUT if current => {
+            // Once attached, whatever this client sent before it went, but
+            // not once another attached over it: it would only take room
+            // in the queue from the new one's keys. The [`Gate`] decides,
+            // here and again as the relay writes it, not whether it is
+            // still current as the frame is read. A client leaving in order (the switch key,
+            // reconnecting at once) attaches again only once this has read
+            // it all and let it go: not over it.
+            wire::INPUT => {
+                let Some((_, takeovers)) = attached.filter(|&(_, at)| shared.gate.admits(at))
+                else {
+                    continue;
+                };
                 // A program that is not reading loses what it is typed
                 // past its queue; the socket is read on, so the client is
                 // never held up and its keys (the detach key) still work.
-                if let Err(TrySendError::Full((_, lost))) =
-                    shared.input.try_send((id.unwrap_or(0), body))
-                {
-                    shared.dropped.fetch_add(lost.len() as u64, SeqCst);
+                let typed = Typed {
+                    takeovers,
+                    bytes: body,
+                };
+                if let Err(TrySendError::Full(lost)) = shared.input.try_send(typed) {
+                    shared.dropped.fetch_add(lost.bytes.len() as u64, SeqCst);
                 }
             }
             wire::RESIZE => match Size::decode(&body) {
@@ -749,8 +843,8 @@ fn attach(mut conn: UnixStream, hello: &[u8], shared: &Arc<Shared>) {
             _ => {}
         }
     }
-    if let Some(me) = id {
-        shared.drop_client(me);
+    if let Some((me, _)) = attached {
+        shared.drop_client(me, false);
     }
 }
 

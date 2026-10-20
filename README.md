@@ -84,6 +84,10 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.14
+
+- A key typed just before the detach (or switch) key reaches the program. The host could see the client leave before it had written the key, and dropped it; a program asking "y/n?" then waited for an answer already given. What a client typed now goes whenever the program reads it, after the client has left too; it is dropped only once another client attaches over the one attached, or the client is cut off for stalling, or the program ends. Leaving (on the key, on a signal to stop, or with the terminal gone), the client sends what it still holds, then waits for the host to let it go, which it does once it has read it all, for at most 250 ms in all: the switch key attaches again after the host has the last keys, not over them. A signal to stop that comes while it leaves stops it. A client let go is no longer cut off from the host's side for reading, which on macOS dropped what it had sent and was not read yet (one that stalls still is); the program hears a client leave before the next one comes, also when another attaches at once; and a host's input thread ends with it. A host gone as a key is sent is a lost connection, not an I/O error, and a resize while the client leaves no longer stretches its wait.
+
 ## 0.3.13
 
 - A heatmap of one group ranks its rows by their level whatever its sign; levels below zero (logs) were left out, so such a heatmap came up empty. `Levels::floor` (and the `Above` wrapper) leaves out rows at or below a floor, for data where zero says nothing.
@@ -247,11 +251,19 @@ so an error it ends with at the start is seen.
 No lock is held across a write to a client or to the pty: each client has
 a writer thread with a bounded queue, and one that stops taking output for
 10 s is let go. Input a program is not reading is dropped once its queue
-is full, so the host always reads the socket; the client never waits on
+is full, so the host always reads the socket; the client does not wait on
 the host either (it holds up to 1 MiB of typed input, dropping the oldest),
-so the detach key works whatever the program does. Frames are sent with `MSG_NOSIGNAL` (`SO_NOSIGPIPE` on
-macOS), and the host catches SIGPIPE, so neither side dies of a peer that
-vanished, whatever the tool set SIGPIPE to.
+so the detach key works whatever the program does. What a client typed
+goes to the program whenever it reads it, after the client has left too,
+as type-ahead does in a terminal; what is still queued is dropped once
+another client attaches over the one attached, or the program ends.
+Leaving on the detach or switch key, the client sends what it still holds,
+shuts its side of the socket and waits for the host to shut its own, which
+the host does once it has read all the client sent and let it go; all of
+it within 250 ms. So the switch key attaches again only once the host has
+the last keys, and not over them. Frames are sent with `MSG_NOSIGNAL`
+(`SO_NOSIGPIPE` on macOS), and the host catches SIGPIPE, so neither side
+dies of a peer that vanished, whatever the tool set SIGPIPE to.
 
 The launching process binds the session's socket itself, under a lock on
 the directory, and hands it to the host it starts: two launches at once
