@@ -90,14 +90,11 @@ legume-tui = "0.3"
    returns its id; `TOOL.find(id)` and `TOOL.stop(id, force, wait)`
    follow and stop it, and `<tool> attach ID` shows it.
 
-## Unreleased
-
-- `Tool::start_detached`: start the tool's own command in a new session from code, with nobody attached, and get its id once its host is up (also when its program ended at once). A label a live session holds is refused; without one, the next number whose ended session left no unseen words is taken, so those words wait for whoever looks next. Such a session ends as soon as its program does, as nobody launched it to see its last words. `Tool::find` says whether a session is live and attached, asking only its host (one ending counts as gone; one busy past the ask's wait, or that cannot be asked, is an error), and `Tool::stop` stops one as `kill` does, waiting as long as it is told. Where sessions are not supported, the start and the stop fail and nothing is found.
-
 ## 0.3.15
 
 - Feature `form`: a command's flags as rows of a form, read from its clap definition (switches, choices, text; defaults, headings, the hidden ones as advanced), the command line the changed rows make, clap's check of it and the flag its complaint blames, values prefilled from a command line; and `form::script`, the `{out}.cmd.sh` beside a run that runs it again from its folder and refuses to run over a finished one. From faba's `faba run` and senna's `senna run`.
 - Feature `browse`: a file browser (folders, then the files kept, a zarr store listed as a file), narrowed by what is typed, `/`, `~` and `name/` walking there, each file with the caller's note and box. From faba.
+- `Tool::start_detached`: start the tool's own command in a new session from code, with nobody attached, and get its id once its host is up (also when its program ended at once). A label a live session holds is refused; without one, the next number whose ended session left no unseen words is taken, so those words wait for whoever looks next. Such a session ends as soon as its program does, as nobody launched it to see its last words. `Tool::find` says whether a session is live and attached, asking only its host (one ending counts as gone; one busy past the ask's wait, or that cannot be asked, is an error), and `Tool::stop` stops one as `kill` does, waiting as long as it is told. Where sessions are not supported, the start and the stop fail and nothing is found.
 
 ## 0.3.14
 
