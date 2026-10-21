@@ -154,6 +154,10 @@ pub(crate) const SIZE_VAR: &str = "LEGUME_TUI_SIZE";
 pub(crate) const CONTROL_VAR: &str = "LEGUME_TUI_CONTROL";
 /// The host's process id: only its own child takes the control channel.
 pub(crate) const PARENT_VAR: &str = "LEGUME_TUI_HOST_PID";
+/// Set in a host started by [`Tool::start_detached`]: no launching
+/// client is coming, so a program that ends does not wait for one.
+#[cfg(sessions)]
+pub(crate) const DETACHED_VAR: &str = "LEGUME_TUI_DETACHED";
 /// The file descriptor of the listening socket the launching client
 /// bound for its host.
 #[cfg(sessions)]
@@ -436,27 +440,101 @@ impl Tool {
     /// tool's sessions as listed just now. Fails, with no host and nothing
     /// of the session left behind, if the host cannot start.
     fn launch(&self, dir: &Path, screen: &str, opts: &Options, live: &[Listed]) -> io::Result<i32> {
+        let mut host = std::process::Command::new(std::env::current_exe()?);
+        host.args(std::env::args_os().skip(1));
+        let size = Size::of(io::stdout()).unwrap_or_default();
+        let name = self.host_up(dir, screen, opts.name.as_deref(), live, host, size)?;
+        // From here the program runs: a failure must not start a second
+        // copy plain, so it is reported and left to attach to.
+        match client::attach_and_report(dir, self, &name) {
+            Ok(code) => Ok(code),
+            Err(e) => {
+                eprintln!("legume-tui: cannot relay {name} ({e}); it runs on, detached");
+                Ok(1)
+            }
+        }
+    }
+
+    /// Start `program` in a new session of `screen`, with nobody
+    /// attached, and return its id (`tool-screen-N`, or
+    /// `tool-screen-<label>`) once its host is up; `<tool> attach ID`
+    /// shows it. `program` is this tool's own executable with the
+    /// arguments, folder and environment its TUI runs with: the host it
+    /// starts runs it again as the session's program, so its `main`
+    /// calls [`serve_if_host`] first. Its terminal is 80 by 24 until a
+    /// client attaches, and when the program ends the session does, its
+    /// [`Session::leave`] kept for whoever looks next. A label a live
+    /// session holds is refused; without one, the next number whose ended
+    /// session left nothing unseen is taken. Fails, with nothing of the
+    /// session left behind, if the host cannot start.
+    pub fn start_detached(
+        &self,
+        screen: &str,
+        label: Option<&str>,
+        mut program: Command,
+    ) -> io::Result<String> {
+        let dir = dir::runtime_dir()?;
+        program.env(DETACHED_VAR, "1");
+        self.host_up(&dir, screen, label, &[], program, Size::default())
+    }
+
+    /// Whether the tool's session `id`, in full (`tool-screen-N`), is
+    /// live, and attached; None when there is no such session. Only that
+    /// session's host is asked.
+    pub fn find(&self, id: &str) -> io::Result<Option<Attached>> {
+        if !id.starts_with(&self.prefix()) {
+            return Ok(None);
+        }
+        dir::check_name(id)?;
+        let found = dir::ask(&dir::socket(&dir::runtime_dir()?, id));
+        Ok(found.map(|l| Attached(l.attached)))
+    }
+
+    /// Ask the tool's live session `id` to stop, as `<tool> kill` does
+    /// (SIGTERM, which its program takes as its quit key; with `force`,
+    /// SIGKILL), and wait up to `wait` for it to end; true if it did.
+    /// Fails when there is no such session.
+    pub fn stop(&self, id: &str, force: bool, wait: Duration) -> io::Result<bool> {
+        let gone = || io::Error::new(io::ErrorKind::NotFound, format!("no live session {id}"));
+        if !id.starts_with(&self.prefix()) {
+            return Err(gone());
+        }
+        dir::check_name(id)?;
+        match dir::stop(&dir::socket(&dir::runtime_dir()?, id), force, wait) {
+            Err(e) if dir::nothing_listens(&e) => Err(gone()),
+            stopped => stopped,
+        }
+    }
+
+    /// Claim a new session of `screen` in `dir` (`label`'s, else the next
+    /// free number's; `live` the tool's sessions as listed, when they
+    /// are) and start `host` as its host, its program's terminal of
+    /// `size`; the session's id once the host is up. What an ended
+    /// session of the id left is said, by a launch; a start from code
+    /// passes over the numbers with such words. Fails, with no host and
+    /// nothing of the session left behind, if the host cannot start.
+    fn host_up(
+        &self,
+        dir: &Path,
+        screen: &str,
+        label: Option<&str>,
+        live: &[Listed],
+        mut host: Command,
+        size: Size,
+    ) -> io::Result<String> {
         use std::os::fd::AsRawFd;
+        let detached = host.get_envs().any(|(k, _)| k == DETACHED_VAR);
         // Bound here, so the name is ours and so is the host we reach on it.
         let base = format!("{}-{screen}", self.name);
-        let claimed = dir::claim(dir, &self.prefix(), &base, opts.name.as_deref(), live)?;
-        if let Some(text) = &claimed.left {
+        let claimed = dir::claim(dir, &self.prefix(), &base, label, live, detached)?;
+        if let Some(text) = claimed.left.as_ref().filter(|_| !detached) {
             eprintln!("{}", dir::ended(&claimed.name, text));
         }
-        let mut claim = Claim {
-            dir,
-            name: claimed.name,
-            listener: Some(claimed.listener),
-            up: false,
-        };
-        let name = claim.name.clone();
-        let path = dir::socket(dir, &name);
-        let size = Size::of(io::stdout()).unwrap_or_default();
-        let log = dir::log_file(dir, &name);
+        let mut claim = Claim::new(dir, claimed);
+        let path = dir::socket(dir, &claim.name);
+        let log = dir::log_file(dir, &claim.name);
         let listen = claim.listener.as_ref().map_or(-1, |l| l.as_raw_fd());
-        let mut host = std::process::Command::new(std::env::current_exe()?);
-        host.args(std::env::args_os().skip(1))
-            .env(HOST_VAR, &name)
+        host.env(HOST_VAR, &claim.name)
             .env(SIZE_VAR, size.to_env())
             .env(LISTEN_VAR, listen.to_string())
             .stdin(std::process::Stdio::null())
@@ -479,22 +557,28 @@ impl Tool {
         // The host has its own copy now.
         claim.listener = None;
         let mut host = spawned?;
-        // Up once it answers: its program is started and it serves clients.
+        // Up once it answers: its program is started and it serves
+        // clients. One gone already is up too if it said nothing: a host
+        // that fails says why, and a program that ended at once took the
+        // session's files away with it.
         let start = std::time::Instant::now();
         loop {
             if dir::ask(&path).is_some() {
                 break;
             }
             let ended = host.try_wait()?.is_some();
+            // Read before the claim takes it away.
+            let said = std::fs::read_to_string(&log).unwrap_or_default();
+            let said = said.trim();
+            if ended && said.is_empty() {
+                break;
+            }
             if ended || start.elapsed() > LAUNCH {
                 if !ended {
                     // Its program goes with it: the pty closes, it hangs up.
                     let _ = host.kill();
                     let _ = host.wait();
                 }
-                // Read before the claim takes it away.
-                let said = std::fs::read_to_string(&log).unwrap_or_default();
-                let said = said.trim();
                 return Err(io::Error::other(if said.is_empty() {
                     "the session host did not start".to_string()
                 } else {
@@ -506,17 +590,52 @@ impl Tool {
         // The host outlives us; it is not ours to wait for, and what it
         // left is its own to take away.
         drop(host);
-        claim.up = true;
-        // From here the program runs: a failure must not start a second
-        // copy plain, so it is reported and left to attach to.
-        match client::attach_and_report(dir, self, &name) {
-            Ok(code) => Ok(code),
-            Err(e) => {
-                eprintln!("legume-tui: cannot relay {name} ({e}); it runs on, detached");
-                Ok(1)
-            }
-        }
+        Ok(claim.up())
     }
+}
+
+/// Whether a live session has a terminal attached ([`Tool::find`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Attached(pub bool);
+
+/// Where sessions are not supported: nothing starts detached, and no
+/// session is live.
+#[cfg(not(sessions))]
+impl Tool {
+    /// Sessions are not supported here: always fails.
+    pub fn start_detached(
+        &self,
+        screen: &str,
+        label: Option<&str>,
+        program: Command,
+    ) -> io::Result<String> {
+        let _ = (screen, label, program);
+        Err(unsupported(self))
+    }
+
+    /// Sessions are not supported here: none is live.
+    pub fn find(&self, id: &str) -> io::Result<Option<Attached>> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// Sessions are not supported here: always fails.
+    pub fn stop(&self, id: &str, force: bool, wait: Duration) -> io::Result<bool> {
+        let _ = (id, force, wait);
+        Err(unsupported(self))
+    }
+}
+
+/// The error a session call fails with where sessions are not supported.
+#[cfg(not(sessions))]
+pub(crate) fn unsupported(tool: &Tool) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "{} sessions are not supported on this platform",
+            tool.name()
+        ),
+    )
 }
 
 /// A session claimed for a launch: until its host is up, a failure takes
@@ -528,6 +647,24 @@ struct Claim<'a> {
     /// Ours until the host has its own copy.
     listener: Option<std::os::unix::net::UnixListener>,
     up: bool,
+}
+
+#[cfg(sessions)]
+impl<'a> Claim<'a> {
+    fn new(dir: &'a Path, claimed: dir::Claimed) -> Self {
+        Self {
+            dir,
+            name: claimed.name,
+            listener: Some(claimed.listener),
+            up: false,
+        }
+    }
+
+    /// Its host is up: the session's files are the host's now. Its id.
+    fn up(mut self) -> String {
+        self.up = true;
+        std::mem::take(&mut self.name)
+    }
 }
 
 #[cfg(sessions)]

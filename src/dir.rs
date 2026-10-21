@@ -142,13 +142,16 @@ fn bind_locked(path: &Path) -> io::Result<UnixListener> {
 /// is its own host's. What an ended session of the id left
 /// ([`take_leave`]) is taken under the same lock, for the launch to say:
 /// a session that ended after the launch took what the ended ones left
-/// is not silenced by the new one taking its id.
+/// is not silenced by the new one taking its id. With `skip_left`, an
+/// unnamed claim passes over the numbers whose ended sessions left words
+/// nobody has seen yet, so a claim that cannot say them keeps them.
 pub(crate) fn claim(
     dir: &Path,
     prefix: &str,
     base: &str,
     name: Option<&str>,
     known: &[Listed],
+    skip_left: bool,
 ) -> io::Result<Claimed> {
     let _lock = lock(dir)?;
     let mut taken = Taken::read(dir, prefix, None, known)?;
@@ -180,7 +183,7 @@ pub(crate) fn claim(
     for n in 1.. {
         let name = format!("{base}-{n}");
         check_name(&name)?;
-        if held(&name).is_some() {
+        if held(&name).is_some() || (skip_left && leave_file(dir, &name).exists()) {
             continue;
         }
         match bind_locked(&socket(dir, &name)) {
@@ -303,18 +306,20 @@ enum Asked {
     Stale,
 }
 
+/// Whether connecting failed as `e` because nothing listens on the
+/// socket: no host behind it.
+pub(crate) fn nothing_listens(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+    )
+}
+
 /// Ask the host behind `path` about itself. The status is not filled in.
 fn asked(path: &Path) -> Asked {
     let mut s = match wire::connect(path) {
         Ok(s) => s,
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
-            ) =>
-        {
-            return Asked::Stale
-        }
+        Err(e) if nothing_listens(&e) => return Asked::Stale,
         Err(_) => return Asked::Silent,
     };
     let answer = (|| {
@@ -696,7 +701,6 @@ pub(crate) fn names<'a>(listed: impl IntoIterator<Item = &'a Listed>) -> String 
 
 /// How long to wait for a session asked to stop, and when to say it is
 /// still being waited for.
-#[cfg(any(test, feature = "clap"))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Patience {
     /// The longest wait.
@@ -708,7 +712,6 @@ pub(crate) struct Patience {
 
 /// Ask the host on `path` to stop its program, and wait up to `wait` for
 /// the session to end, saying nothing; true if it did.
-#[cfg(test)]
 pub(crate) fn stop(path: &Path, force: bool, wait: Duration) -> io::Result<bool> {
     let quiet = Patience {
         limit: wait,
@@ -721,7 +724,6 @@ pub(crate) fn stop(path: &Path, force: bool, wait: Duration) -> io::Result<bool>
 /// to end as `patience` says, calling `waiting` at its times; true if it
 /// did. The host holds the connection the stop was asked on until it
 /// ends, so the wait is a read that ends with it.
-#[cfg(any(test, feature = "clap"))]
 pub(crate) fn stop_waiting(
     path: &Path,
     force: bool,

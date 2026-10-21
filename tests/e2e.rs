@@ -1041,3 +1041,72 @@ fn the_probe_reads_the_terminals_answers_off_the_screen() {
     assert_eq!(t.exit_code(), 0);
     assert!(dir.is_empty());
 }
+
+#[test]
+fn a_session_started_from_code_runs_detached_until_stopped() {
+    let dir = private();
+    // Started with no terminal: it returns once the host is up, its id said.
+    let (ok, said) = dir.run_all(&["start", "fit", "bye"]);
+    assert!(ok, "{said}");
+    assert_eq!(said.trim(), "demo-job-fit");
+    let listed = dir.wait_listed("demo-job-fit");
+    assert!(listed.contains("detached"), "{listed}");
+    assert_eq!(dir.run(&["find", "demo-job-fit"]).trim(), "detached");
+
+    // Its label is taken while it runs; without one, the next number.
+    let (ok, said) = dir.run_all(&["start", "fit", "bye"]);
+    assert!(!ok, "{said}");
+    assert_eq!(dir.run(&["start", "", "bye"]).trim(), "demo-job-1");
+
+    // Attached, the program draws; detached again, it runs on.
+    let mut t = dir.term(&["attach", "demo-job-fit"], &[]);
+    t.wait_screen("demo-bye waiting");
+    t.type_(b"\x1b\x04");
+    assert_eq!(t.exit_code(), 0);
+    assert_eq!(dir.run(&["find", "demo-job-fit"]).trim(), "detached");
+
+    // Stopped from code: it ends by its quit path, and nothing is left.
+    assert_eq!(dir.run(&["stop", "demo-job-fit"]).trim(), "stopped");
+    assert_eq!(dir.run(&["find", "demo-job-fit"]).trim(), "gone");
+    assert_eq!(dir.run(&["stop", "demo-job-1"]).trim(), "stopped");
+    let (ok, said) = dir.run_all(&["stop", "demo-job-1"]);
+    assert!(!ok, "a session gone is not stopped again: {said}");
+    assert!(dir.sockets().is_empty(), "{:?}", dir.sockets());
+}
+
+#[test]
+fn a_session_started_from_code_runs_in_its_folder_and_ends_on_its_own() {
+    let dir = private();
+    let work = tempfile::tempdir().unwrap();
+    let out = dir
+        .command()
+        .args(["start", "", "bye"])
+        .current_dir(work.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(dir.run(&["find", &id]).trim(), "detached");
+    // The program ends when its folder says so; nobody attached waits it.
+    std::fs::write(work.path().join("end"), "").unwrap();
+    let start = Instant::now();
+    dir.wait_said(&["find", &id], "gone");
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "a host started from code does not wait for a first client: {:?}",
+        start.elapsed()
+    );
+
+    // Its last words wait for whoever looks next; a start from code takes
+    // another number rather than drop them.
+    let (ok, said) = dir.run_all(&["start", "", "bye"]);
+    assert!(ok, "{said}");
+    assert_ne!(said.trim(), id, "{said}");
+    assert!(dir.run(&["sessions"]).contains("demo-bye: left on its own"));
+
+    // A program that ends at once was still started.
+    for _ in 0..5 {
+        let (ok, said) = dir.run_all(&["start", "", "which"]);
+        assert!(ok, "{said}");
+    }
+}

@@ -446,13 +446,7 @@ mod unsupported {
     use super::*;
 
     fn unsupported(tool: &Tool) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!(
-                "{} sessions are not supported on this platform",
-                tool.name()
-            ),
-        ))
+        Err(crate::unsupported(tool))
     }
 
     pub fn attach(tool: &Tool, _: &AttachArgs) -> io::Result<()> {

@@ -21,6 +21,11 @@
 //! as such work, `demo jobs` holds a fit and a save in process groups of
 //! their own (the save writes once a file named `go` appears in its
 //! folder), and `demo probe` shows what the attached terminal answered.
+//!
+//! `demo start LABEL ARGS...` starts `demo ARGS...` in a new detached
+//! session from code (an empty LABEL for the next number) and prints its
+//! id; `demo find ID` prints its state, or `gone`; `demo stop ID
+//! [--force]` stops it from code.
 
 use legume_tui::child::Stopper;
 use legume_tui::cli::{AttachArgs, KillArgs, RenameArgs};
@@ -55,6 +60,28 @@ fn main() -> std::io::Result<()> {
             let label = args.get(2).cloned().unwrap_or_default();
             let session = name.unwrap_or_default();
             return legume_tui::cli::rename(&TOOL, &RenameArgs { session, label });
+        }
+        Some("start") => {
+            let label = name.filter(|n| !n.is_empty());
+            let mut program = Command::new(std::env::current_exe()?);
+            program.args(args.get(2..).unwrap_or_default());
+            println!("{}", TOOL.start_detached("job", label.as_deref(), program)?);
+            return Ok(());
+        }
+        Some("find") => {
+            let state = match TOOL.find(&name.unwrap_or_default())? {
+                Some(legume_tui::Attached(true)) => "attached",
+                Some(legume_tui::Attached(false)) => "detached",
+                None => "gone",
+            };
+            println!("{state}");
+            return Ok(());
+        }
+        Some("stop") => {
+            let force = args.get(2).is_some_and(|a| a == "--force");
+            let stopped = TOOL.stop(&name.unwrap_or_default(), force, Duration::from_secs(10))?;
+            println!("{}", if stopped { "stopped" } else { "running" });
+            return Ok(());
         }
         Some("which") => {
             let s = TOOL.session("which", &Options::default())?;

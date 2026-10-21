@@ -183,15 +183,20 @@ impl Private {
 
     /// Wait until `<tool> sessions` says `what`; what it said.
     pub fn wait_listed(&self, what: &str) -> String {
+        self.wait_said(&["sessions"], what)
+    }
+
+    /// Wait until the tool run with `args` says `what`; what it said.
+    pub fn wait_said(&self, args: &[&str], what: &str) -> String {
         let start = Instant::now();
         loop {
-            let listed = self.run(&["sessions"]);
-            if listed.contains(what) {
-                return listed;
+            let said = self.run(args);
+            if said.contains(what) {
+                return said;
             }
             assert!(
                 start.elapsed() < self.wait,
-                "never listed {what:?}: {listed:?}"
+                "{args:?} never said {what:?}: {said:?}"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
