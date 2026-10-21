@@ -1,6 +1,6 @@
 [package]
 name = "legume-tui"
-version = "0.3.14"
+version = "0.3.15"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -58,6 +58,13 @@ gallery = ["dep:serde", "dep:serde_json", "dep:tempfile", "dep:image"]
 # Each saved file's size, time and SHA-256, so a figure can be traced and
 # checked against the files on disk.
 gallery-trace = ["gallery", "dep:sha2"]
+# A command's flags as rows of a form, read from its clap definition: the
+# command line the filled form stands for, clap's check of it and the flag
+# its complaint blames, and the script that runs it again.
+form = ["clap"]
+# A file browser: one folder's subfolders and files, narrowed by what is
+# typed, with typed paths walked. ratatui only.
+browse = []
 
 [dependencies]
 # `unstable-rendered-line-info`: a paragraph's wrapped row count, for popups.

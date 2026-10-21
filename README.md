@@ -84,6 +84,11 @@ legume-tui = "0.3"
    terminal's size, the tool's working directory and its canned
    `Replies`, and `Term::screen` for what it shows.
 
+## 0.3.15
+
+- Feature `form`: a command's flags as rows of a form, read from its clap definition (switches, choices, text; defaults, headings, the hidden ones as advanced), the command line the changed rows make, clap's check of it and the flag its complaint blames, values prefilled from a command line; and `form::script`, the `{out}.cmd.sh` beside a run that runs it again from its folder and refuses to run over a finished one. From faba's `faba run` and senna's `senna run`.
+- Feature `browse`: a file browser (folders, then the files kept, a zarr store listed as a file), narrowed by what is typed, `/`, `~` and `name/` walking there, each file with the caller's note and box. From faba.
+
 ## 0.3.14
 
 - A key typed just before the detach (or switch) key reaches the program. The host could see the client leave before it had written the key, and dropped it; a program asking "y/n?" then waited for an answer already given. What a client typed now goes whenever the program reads it, after the client has left too; it is dropped only once another client attaches over the one attached, or the client is cut off for stalling, or the program ends. Leaving (on the key, on a signal to stop, or with the terminal gone), the client sends what it still holds, then waits for the host to let it go, which it does once it has read it all, for at most 250 ms in all: the switch key attaches again after the host has the last keys, not over them. A signal to stop that comes while it leaves stops it. A client let go is no longer cut off from the host's side for reading, which on macOS dropped what it had sent and was not read yet (one that stalls still is); the program hears a client leave before the next one comes, also when another attaches at once; and a host's input thread ends with it. A host gone as a key is sent is a lost connection, not an I/O error, and a resize while the client leaves no longer stretches its wait.
