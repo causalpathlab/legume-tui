@@ -1,6 +1,7 @@
-//! The styles the save dialog and the saved-figures strip draw in, so they
-//! need no map theme: the terminal's own colours by default, or a map
-//! viewer's [`crate::chrome::Chrome`] with feature `map`.
+//! The styles the save dialog, the saved-figures strip, the form's rows and
+//! the file browser draw in, so they need no map theme: the terminal's own
+//! colours by default, or a map viewer's [`crate::chrome::Chrome`] with
+//! feature `map`.
 
 use ratatui::style::{Color, Modifier, Style};
 

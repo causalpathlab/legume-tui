@@ -49,7 +49,7 @@ fn start(path: &Path, script: &str) -> (PipeReader, std::thread::JoinHandle<i32>
     )
     .unwrap();
     let shared = Arc::clone(&h.shared);
-    (r, std::thread::spawn(move || h.wait()), shared)
+    (r, std::thread::spawn(move || h.wait(FIRST)), shared)
 }
 
 impl Running {

@@ -142,13 +142,16 @@ fn bind_locked(path: &Path) -> io::Result<UnixListener> {
 /// is its own host's. What an ended session of the id left
 /// ([`take_leave`]) is taken under the same lock, for the launch to say:
 /// a session that ended after the launch took what the ended ones left
-/// is not silenced by the new one taking its id.
+/// is not silenced by the new one taking its id. With `skip_left`, an
+/// unnamed claim passes over the numbers whose ended sessions left words
+/// nobody has seen yet, so a claim that cannot say them keeps them.
 pub(crate) fn claim(
     dir: &Path,
     prefix: &str,
     base: &str,
     name: Option<&str>,
     known: &[Listed],
+    skip_left: bool,
 ) -> io::Result<Claimed> {
     let _lock = lock(dir)?;
     let mut taken = Taken::read(dir, prefix, None, known)?;
@@ -180,7 +183,7 @@ pub(crate) fn claim(
     for n in 1.. {
         let name = format!("{base}-{n}");
         check_name(&name)?;
-        if held(&name).is_some() {
+        if held(&name).is_some() || (skip_left && leave_file(dir, &name).exists()) {
             continue;
         }
         match bind_locked(&socket(dir, &name)) {
@@ -295,46 +298,82 @@ impl Listed {
 }
 
 /// What a host said when asked about itself.
-enum Asked {
+pub(crate) enum Asked {
     Answered(Listed),
-    /// It took the connection but did not answer in time: busy, spared.
-    Silent,
+    /// It took the question but did not answer in time: busy, spared.
+    Busy,
+    /// It took the question and let it go: it is ending, spared (it takes
+    /// its own files away).
+    Closing,
+    /// Asking failed otherwise (a connection refused for another reason
+    /// than nothing listening, an answer that is not one): why. Spared.
+    Failed(io::Error),
     /// Nothing listens: the socket is stale.
     Stale,
 }
 
+/// Whether connecting failed as `e` because nothing listens on the
+/// socket: no host behind it.
+pub(crate) fn nothing_listens(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+    )
+}
+
 /// Ask the host behind `path` about itself. The status is not filled in.
-fn asked(path: &Path) -> Asked {
+pub(crate) fn asked(path: &Path) -> Asked {
+    let gone = |e: &io::Error| {
+        matches!(
+            e.kind(),
+            io::ErrorKind::BrokenPipe
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::NotConnected
+                | io::ErrorKind::UnexpectedEof
+        )
+    };
     let mut s = match wire::connect(path) {
         Ok(s) => s,
+        Err(e) if nothing_listens(&e) => return Asked::Stale,
+        Err(e) if gone(&e) => return Asked::Closing,
+        Err(e) => return Asked::Failed(e),
+    };
+    let reply = wire::set_timeout(&s, true, Some(ASK))
+        .and_then(|()| wire::set_timeout(&s, false, Some(ASK)))
+        .and_then(|()| wire::write_frame(&s, wire::INFO, &[]))
+        .and_then(|()| wire::read_frame(&mut s));
+    let body = match reply {
+        Ok(Some((wire::INFO_REPLY, b))) if b.len() >= 13 => b,
+        // Let go before it answered.
+        Ok(None) => return Asked::Closing,
+        Ok(Some(_)) => {
+            return Asked::Failed(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the host's answer is not one",
+            ))
+        }
         Err(e)
             if matches!(
                 e.kind(),
-                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
             ) =>
         {
-            return Asked::Stale
+            return Asked::Busy
         }
-        Err(_) => return Asked::Silent,
+        Err(e) if gone(&e) => return Asked::Closing,
+        Err(e) => return Asked::Failed(e),
     };
-    let answer = (|| {
-        wire::set_timeout(&s, true, Some(ASK)).ok()?;
-        wire::set_timeout(&s, false, Some(ASK)).ok()?;
-        wire::write_frame(&s, wire::INFO, &[]).ok()?;
-        match wire::read_frame(&mut s).ok()?? {
-            (wire::INFO_REPLY, b) if b.len() >= 13 => Some(Listed {
-                name: path.file_stem()?.to_string_lossy().into_owned(),
-                label: None,
-                pid: u32::from_be_bytes(b[0..4].try_into().ok()?),
-                attached: b[4] == 1,
-                started: u64::from_be_bytes(b[5..13].try_into().ok()?),
-                command: String::from_utf8_lossy(&b[13..]).into_owned(),
-                status: None,
-            }),
-            _ => None,
-        }
-    })();
-    answer.map_or(Asked::Silent, Asked::Answered)
+    Asked::Answered(Listed {
+        name: path
+            .file_stem()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        label: None,
+        pid: u32::from_be_bytes([body[0], body[1], body[2], body[3]]),
+        attached: body[4] == 1,
+        started: u64::from_be_bytes(body[5..13].try_into().unwrap_or_default()),
+        command: String::from_utf8_lossy(&body[13..]).into_owned(),
+        status: None,
+    })
 }
 
 /// Ask the host behind `path` about itself. None when nothing answers.
@@ -342,7 +381,7 @@ fn asked(path: &Path) -> Asked {
 pub(crate) fn ask(path: &Path) -> Option<Listed> {
     match asked(path) {
         Asked::Answered(listed) => Some(listed),
-        Asked::Silent | Asked::Stale => None,
+        _ => None,
     }
 }
 
@@ -596,7 +635,10 @@ pub fn live(dir: &Path, prefix: &str) -> io::Result<Vec<Listed>> {
             .collect();
         asking
             .into_iter()
-            .map(|a| a.join().unwrap_or(Asked::Silent))
+            .map(|a| {
+                a.join()
+                    .unwrap_or_else(|_| Asked::Failed(io::Error::other("asking it panicked")))
+            })
             .collect()
     });
     let mut found = Vec::new();
@@ -611,7 +653,7 @@ pub fn live(dir: &Path, prefix: &str) -> io::Result<Vec<Listed>> {
             Asked::Stale => clear(dir, &name)?,
             // A host busy enough not to answer still accepts connections,
             // so it is spared.
-            Asked::Silent => {}
+            Asked::Busy | Asked::Closing | Asked::Failed(_) => {}
         }
     }
     found.sort_by(|a, b| natural(&a.name, &b.name));
@@ -696,7 +738,6 @@ pub(crate) fn names<'a>(listed: impl IntoIterator<Item = &'a Listed>) -> String 
 
 /// How long to wait for a session asked to stop, and when to say it is
 /// still being waited for.
-#[cfg(any(test, feature = "clap"))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Patience {
     /// The longest wait.
@@ -708,7 +749,6 @@ pub(crate) struct Patience {
 
 /// Ask the host on `path` to stop its program, and wait up to `wait` for
 /// the session to end, saying nothing; true if it did.
-#[cfg(test)]
 pub(crate) fn stop(path: &Path, force: bool, wait: Duration) -> io::Result<bool> {
     let quiet = Patience {
         limit: wait,
@@ -721,7 +761,6 @@ pub(crate) fn stop(path: &Path, force: bool, wait: Duration) -> io::Result<bool>
 /// to end as `patience` says, calling `waiting` at its times; true if it
 /// did. The host holds the connection the stop was asked on until it
 /// ends, so the wait is a read that ends with it.
-#[cfg(any(test, feature = "clap"))]
 pub(crate) fn stop_waiting(
     path: &Path,
     force: bool,

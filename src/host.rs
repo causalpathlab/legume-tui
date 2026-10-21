@@ -465,8 +465,9 @@ impl Host {
     /// say, and return the status (`128 + n` for signal `n`; 1 when it
     /// cannot be had). With no client attached at the end, or one that
     /// does not say it took it ([`wire::HEARD`]), what the program left
-    /// stays for whoever looks next.
-    pub fn wait(mut self) -> i32 {
+    /// stays for whoever looks next. A program that ended before its first
+    /// client was ready keeps what it said for that client up to `first`.
+    pub fn wait(mut self, first: Duration) -> i32 {
         let code = loop {
             match self.child.wait() {
                 Ok(s) => break exit_code(s),
@@ -487,7 +488,7 @@ impl Host {
             let _ = self
                 .shared
                 .early_gone
-                .wait_timeout_while(early, FIRST, |e| {
+                .wait_timeout_while(early, first, |e| {
                     e.is_some() && !self.shared.stopped.load(SeqCst)
                 });
         }
@@ -889,12 +890,16 @@ fn host_session(name: &str) -> io::Result<i32> {
         .ok()
         .and_then(|s| Size::from_env(&s))
         .unwrap_or_default();
+    // Started from code ([`crate::Tool::start_detached`]): no launching
+    // client is coming, so its program's end is the session's.
+    let detached = std::env::var_os(crate::DETACHED_VAR).is_some();
     let mut program = Command::new(std::env::current_exe()?);
     program
         .args(std::env::args_os().skip(1))
         .env_remove(crate::HOST_VAR)
         .env_remove(crate::SIZE_VAR)
         .env_remove(crate::LISTEN_VAR)
+        .env_remove(crate::DETACHED_VAR)
         .env(crate::SESSION_VAR, name);
     let host = Host::start(
         listener,
@@ -905,7 +910,7 @@ fn host_session(name: &str) -> io::Result<i32> {
         Control::Pipe,
     )?;
     // It leaves no socket, log, status or label behind.
-    Ok(host.wait())
+    Ok(host.wait(if detached { Duration::ZERO } else { FIRST }))
 }
 
 #[cfg(test)]
