@@ -299,3 +299,46 @@ fn sessions_listed_just_now_are_taken_as_live_without_asking() {
     assert_eq!(c.left.as_deref(), Some("the run's summary"));
     assert!(!leave_file(dir, "tool-view-1").exists(), "taken");
 }
+
+#[test]
+fn a_host_asked_is_answered_busy_closing_stale_or_failed_and_says_which() {
+    use std::io::Write;
+    let dir = private();
+    let path = dir.path().join("tool-view-1.sock");
+    // Nothing behind the socket: stale.
+    let l = UnixListener::bind(&path).unwrap();
+    drop(l);
+    assert!(matches!(asked(&path), Asked::Stale));
+    let _ = std::fs::remove_file(&path);
+    // It takes the question and never answers: busy.
+    let l = UnixListener::bind(&path).unwrap();
+    let held = std::thread::spawn(move || {
+        let (s, _) = l.accept().unwrap();
+        std::thread::sleep(ASK + Duration::from_millis(500));
+        drop(s);
+        l
+    });
+    assert!(matches!(asked(&path), Asked::Busy));
+    let l = held.join().unwrap();
+    // It takes the question and lets it go: it is ending.
+    let closing = std::thread::spawn(move || {
+        let (s, _) = l.accept().unwrap();
+        drop(s);
+        l
+    });
+    assert!(matches!(asked(&path), Asked::Closing));
+    let l = closing.join().unwrap();
+    // It answers what is not an answer: failed, and why.
+    let garbled = std::thread::spawn(move || {
+        let (mut s, _) = l.accept().unwrap();
+        let mut head = [0u8; 5];
+        let _ = std::io::Read::read_exact(&mut s, &mut head);
+        s.write_all(&wire::frame(b'?', b"x")).unwrap();
+        l
+    });
+    match asked(&path) {
+        Asked::Failed(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{e}"),
+        _ => panic!("a garbled answer is a failure"),
+    }
+    drop(garbled.join().unwrap());
+}

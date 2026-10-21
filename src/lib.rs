@@ -479,15 +479,25 @@ impl Tool {
     }
 
     /// Whether the tool's session `id`, in full (`tool-screen-N`), is
-    /// live, and attached; None when there is no such session. Only that
-    /// session's host is asked.
+    /// live, and attached; None when there is no such session, or it is
+    /// ending. Only that session's host is asked. One that takes the
+    /// question but does not answer in time is busy, not gone: that is an
+    /// error ([`io::ErrorKind::TimedOut`]); so is any other failure to ask,
+    /// with its own error.
     pub fn find(&self, id: &str) -> io::Result<Option<Attached>> {
         if !id.starts_with(&self.prefix()) {
             return Ok(None);
         }
         dir::check_name(id)?;
-        let found = dir::ask(&dir::socket(&dir::runtime_dir()?, id));
-        Ok(found.map(|l| Attached(l.attached)))
+        match dir::asked(&dir::socket(&dir::runtime_dir()?, id)) {
+            dir::Asked::Answered(l) => Ok(Some(Attached(l.attached))),
+            dir::Asked::Stale | dir::Asked::Closing => Ok(None),
+            dir::Asked::Busy => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{id} is live but did not answer in time"),
+            )),
+            dir::Asked::Failed(e) => Err(e),
+        }
     }
 
     /// Ask the tool's live session `id` to stop, as `<tool> kill` does
