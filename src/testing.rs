@@ -78,16 +78,20 @@ impl Private {
     }
 
     /// The tool, its sessions here, in a clean environment: no session,
-    /// multiplexer or opt-out around it, and no backtrace setting from the
+    /// multiplexer or opt-out around it, nothing of the terminal the tests
+    /// run in ([`crate::TERMINAL_VARS`]: a `TERM_PROGRAM=tmux` or an ssh
+    /// login would turn pictures off), and no backtrace setting from the
     /// test runner (CI's `RUST_BACKTRACE=1` would have an error the tool
     /// ends with followed by a trace longer than the screen, so what a
     /// test looks for on the screen depended on where it ran). A test
     /// that wants one passes it in `env`.
     pub fn command(&self) -> Command {
         let mut cmd = Command::new(&self.exe);
+        for var in crate::TERMINAL_VARS {
+            cmd.env_remove(var);
+        }
         cmd.env(crate::DIR_VAR, self.path())
             .env("TERM", "xterm-256color")
-            .env_remove("TMUX")
             .env_remove("STY")
             .env_remove("RUST_BACKTRACE")
             .env_remove("RUST_LIB_BACKTRACE")
