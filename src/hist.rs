@@ -30,6 +30,9 @@ pub const GUTTER: u16 = 6;
 /// Bins across the range on every scale.
 const TARGET_BINS: f64 = 50.0;
 
+/// Most bins [`Binned::new`] makes.
+const MAX_BINS: i64 = 1024;
+
 /// How a histogram axis is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scale {
@@ -100,22 +103,29 @@ impl Binning {
         } else {
             (max / 1e3).clamp(1e-9, 1.0)
         };
-        Self::shifted(scale, max, integer, shift)
+        Self::shifted(scale, 0.0, max, integer, shift)
     }
 
-    /// [`Binning::new`] with the log scale shifted by `shift`.
-    fn shifted(scale: Scale, max: f64, integer: bool, shift: f64) -> Self {
-        let span = if integer { max + 1.0 } else { max };
+    /// Bins about [`TARGET_BINS`] across `min..=max` stretched to take in
+    /// 0 (where the keys start), the log scale shifted by `shift`. For
+    /// non-negative data that is `0..=max`, as [`Binning::new`]. A range
+    /// with no width on the scale (one value, or negatives the log and
+    /// sqrt scales put all at 0) gets bins one unit wide.
+    fn shifted(scale: Scale, min: f64, max: f64, integer: bool, shift: f64) -> Self {
+        let (lo, hi) = (min.min(0.0), max.max(0.0));
+        let top = if integer { hi + 1.0 } else { hi };
         let mut bins = Self {
             scale,
             width: 1.0,
             shift,
         };
         let width = match scale {
-            Scale::Linear if integer => (span / TARGET_BINS).ceil().max(1.0),
-            _ => bins.t(span) / TARGET_BINS,
+            Scale::Linear if integer => ((top - lo) / TARGET_BINS).ceil().max(1.0),
+            _ => (bins.t(top) - bins.t(lo)) / TARGET_BINS,
         };
-        bins.width = width.max(f64::MIN_POSITIVE);
+        if width.is_finite() && width > 0.0 {
+            bins.width = width;
+        }
         bins
     }
 
@@ -232,9 +242,15 @@ impl Binned {
             true => 1.0,
             false => Axis::fit(sorted, true).shift,
         };
-        let bins = Binning::shifted(scale, max, integer, shift);
+        let mut bins = Binning::shifted(scale, min, max, integer, shift);
+        // Bins sized to the range number about TARGET_BINS; widen them
+        // should rounding ever make many more.
+        let span = |b: &Binning| i64::from(b.key(max)) - i64::from(b.key(min)) + 1;
+        while span(&bins) > MAX_BINS {
+            bins.width *= 2.0;
+        }
         let kmin = bins.key(min);
-        let nbins = (bins.key(max) - kmin + 1).max(1) as usize;
+        let nbins = span(&bins).max(1) as usize;
         let counts = count(&bins, kmin, nbins, sorted.iter().copied());
         Self { bins, kmin, counts }
     }
@@ -322,7 +338,8 @@ pub struct HistPlot<'a, T: BarValue = usize> {
     /// Style of each bin's bar, by key.
     pub style: &'a dyn Fn(i32) -> Style,
     /// A subset drawn in front, in the bar style; `counts` then draw dimmed
-    /// behind it.
+    /// behind it. Counted on the same bins; a bar past `counts`' end has
+    /// nothing behind it.
     pub subset: Option<&'a [T]>,
     /// How bar heights are drawn.
     pub y_scale: Scale,
@@ -403,7 +420,9 @@ impl<T: BarValue> HistPlot<'_, T> {
                 } else {
                     (self.style)(self.kmin + i as i32)
                 };
-                let (top, under) = (eighths(c), behind.map_or(0, |b| eighths(b[i])));
+                // A bar `behind` lacks (a subset counted on other bins) is 0.
+                let under = behind.and_then(|b| b.get(i)).map_or(0, |&b| eighths(b));
+                let top = eighths(c);
                 for (j, y) in (chart.top()..chart.bottom()).rev().enumerate() {
                     let mut fill = top.saturating_sub(j * 8).min(8);
                     if fill == 0 {
@@ -508,7 +527,7 @@ pub struct MirrorSide<'a, T: BarValue = f64> {
     /// Each bar's length.
     pub counts: &'a [T],
     /// A subset drawn in front, in `style`; `counts` then draw dimmed
-    /// behind it.
+    /// behind it. A bar past `counts`' end has nothing behind it.
     pub subset: Option<&'a [T]>,
     /// The bars' style.
     pub style: Style,
@@ -591,7 +610,9 @@ impl<T: BarValue> MirrorPlot<'_, T> {
             let mut bars = |counts: &[T], behind: Option<&[T]>, style: Style| {
                 for (i, &c) in counts.iter().enumerate() {
                     let Some(x) = x_of(i) else { break };
-                    let (top, under) = (halves(c), behind.map_or(0, |b| halves(b[i])));
+                    // A bar `behind` lacks is 0, as in HistPlot.
+                    let under = behind.and_then(|b| b.get(i)).map_or(0, |&b| halves(b));
+                    let top = halves(c);
                     for k in 0..top.div_ceil(2) {
                         let y = if up {
                             zero - 1 - k as u16
