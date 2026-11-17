@@ -109,11 +109,8 @@ pub fn typed_path(text: &str) -> PathBuf {
     normalize(&path)
 }
 
-/// `at` moved by `d`, kept within `0..=last`.
-#[must_use]
-pub fn moved(at: usize, d: isize, last: usize) -> usize {
-    at.saturating_add_signed(d).min(last)
-}
+/// Item `at` moved by `d`, kept within `0..=last`.
+pub use crate::keys::moved;
 
 /// The first of `rows` visible items of a `len`-long list that keeps item
 /// `at` near the middle.
@@ -693,8 +690,8 @@ enum Found<A> {
 }
 
 /// A folder being listed on a worker thread, which stops at its next
-/// entry once this is dropped.
-// TODO(integrator): a `crate::work::Pending` once that module lands.
+/// entry once this is dropped. A stream of what it finds, not one answer,
+/// so a channel of its own rather than a [`crate::work`] `Pending`.
 struct Listing<A> {
     rx: mpsc::Receiver<Found<A>>,
     since: Instant,

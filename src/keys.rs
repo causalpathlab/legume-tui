@@ -40,8 +40,7 @@ pub fn list_delta(k: &KeyEvent, vi: bool) -> Option<isize> {
     })
 }
 
-/// Item `at` moved by `d`, kept within `0..=last`: as
-/// `browse::moved` moves.
+/// Item `at` moved by `d`, kept within `0..=last`.
 #[must_use]
 pub fn moved(at: usize, d: isize, last: usize) -> usize {
     at.saturating_add_signed(d).min(last)

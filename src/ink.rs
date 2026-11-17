@@ -7,9 +7,7 @@ use ratatui::style::{Modifier, Style};
 
 /// Accent bars and marks.
 pub(crate) fn accent(look: &Look) -> Style {
-    // INTEGRATION: `Look` gains an `accent` field on another branch; once
-    // merged, return `look.accent` here.
-    look.bold
+    look.accent
 }
 
 /// Key names, typed values, the value in focus: the accent in bold.

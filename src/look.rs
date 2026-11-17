@@ -69,6 +69,28 @@ impl Look {
         self.accent = accent;
         self
     }
+
+    /// This look with `border` for borders and rules: a look cannot be
+    /// built field by field, so a change of one style goes through these.
+    #[must_use]
+    pub const fn with_border(mut self, border: Style) -> Self {
+        self.border = border;
+        self
+    }
+
+    /// This look with `page` for the page.
+    #[must_use]
+    pub const fn with_page(mut self, page: Style) -> Self {
+        self.page = page;
+        self
+    }
+
+    /// This look with `hint` for key hints and secondary lines.
+    #[must_use]
+    pub const fn with_hint(mut self, hint: Style) -> Self {
+        self.hint = hint;
+        self
+    }
 }
 
 impl Default for Look {
