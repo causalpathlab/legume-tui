@@ -100,7 +100,13 @@ pub struct Field {
     pub id: String,
     /// The long name, without `--`.
     pub long: String,
+    /// clap's other long names for it, visible and hidden, without `--`.
+    pub aliases: Vec<String>,
+    /// The short help, as `-h` shows it; `""` for none.
+    pub help: String,
     pub long_help: String,
+    /// What clap calls the value (`FILE`, `PREFIX`, …); `""` for none.
+    pub value_name: String,
     /// The help heading the flag is listed under; `""` for none.
     pub heading: String,
     pub kind: Kind,
@@ -159,12 +165,24 @@ impl Field {
         }
         Some(Field {
             id: a.get_id().to_string(),
+            aliases: a
+                .get_all_aliases()
+                .into_iter()
+                .flatten()
+                .map(str::to_string)
+                .collect(),
+            help: a.get_help().map(ToString::to_string).unwrap_or_default(),
             long_help: a
                 .get_long_help()
                 .or_else(|| a.get_help())
                 .map(ToString::to_string)
                 .unwrap_or_default(),
             heading: heading.to_string(),
+            value_name: a
+                .get_value_names()
+                .and_then(|v| v.first())
+                .map(ToString::to_string)
+                .unwrap_or_default(),
             value: default.clone(),
             default,
             required: a.is_required_set(),
@@ -173,6 +191,13 @@ impl Field {
             many,
             long,
         })
+    }
+
+    /// Whether `name` (without `--`) is this flag's long name or one of
+    /// its aliases.
+    #[must_use]
+    pub fn is_named(&self, name: &str) -> bool {
+        self.long == name || self.aliases.iter().any(|a| a == name)
     }
 
     /// Whether the value is the one clap would use anyway.
@@ -345,13 +370,15 @@ impl Form {
         form
     }
 
+    /// The row of the flag named `name` (without `--`): its long name or
+    /// an alias.
     #[must_use]
-    pub fn get(&self, long: &str) -> Option<&Field> {
-        self.fields.iter().find(|f| f.long == long)
+    pub fn get(&self, name: &str) -> Option<&Field> {
+        self.fields.iter().find(|f| f.is_named(name))
     }
 
-    pub fn get_mut(&mut self, long: &str) -> Option<&mut Field> {
-        self.fields.iter_mut().find(|f| f.long == long)
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Field> {
+        self.fields.iter_mut().find(|f| f.is_named(name))
     }
 
     /// Flags changed from their defaults.

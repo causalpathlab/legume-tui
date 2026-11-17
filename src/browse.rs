@@ -302,6 +302,9 @@ pub struct Browser {
     pub list: FindList<Entry>,
     keep: Box<dyn Fn(&str) -> bool>,
     note: Noter,
+    /// The noter speaks of folders too, not only files (see
+    /// [`Self::noting_folders`]).
+    note_dirs: bool,
 }
 
 impl Browser {
@@ -318,7 +321,16 @@ impl Browser {
             list: FindList::default(),
             keep: Box::new(keep),
             note: Box::new(note),
+            note_dirs: false,
         }
+    }
+
+    /// Ask the noter of every folder listed too, `..` aside: a folder of
+    /// outputs can say so.
+    #[must_use]
+    pub fn noting_folders(mut self) -> Self {
+        self.note_dirs = true;
+        self
     }
 
     /// Listed at its folder.
@@ -362,7 +374,11 @@ impl Browser {
             for name in names {
                 let path = dir.join(&name);
                 all.push(Entry {
-                    note: if is_dir { None } else { (self.note)(&path) },
+                    note: if is_dir && !self.note_dirs {
+                        None
+                    } else {
+                        (self.note)(&path)
+                    },
                     name,
                     path,
                     dir: is_dir,
