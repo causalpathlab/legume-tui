@@ -202,6 +202,20 @@ fn several_values_are_laid_out_as_the_flag_takes_them() {
     assert_eq!(emit("--f", Many::Joined(','), vs()), ["--f", "a,-b"]);
     assert_eq!(emit("--f", Many::Listed, vs()), ["--f", "a", "-b"]);
     assert_eq!(emit("--f", Many::Repeated, vs()), ["--f", "a", "--f=-b"]);
+}
+
+#[test]
+fn an_appending_flag_of_several_values_repeats_so_a_negative_one_parses() {
+    let a = clap::Arg::new("names")
+        .long("names")
+        .num_args(1..)
+        .action(clap::ArgAction::Append);
+    assert_eq!(many_of(&a), Many::Repeated);
+    let vs = vec!["-1".to_string(), "-2".to_string()];
+    assert_eq!(
+        emit("--names", many_of(&a), vs),
+        ["--names=-1", "--names=-2"]
+    );
     assert!(emit("--f", Many::One, vec![]).is_empty());
 }
 

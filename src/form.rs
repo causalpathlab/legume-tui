@@ -33,10 +33,12 @@ pub enum Many {
 pub fn many_of(a: &Arg) -> Many {
     if let Some(c) = a.get_value_delimiter() {
         Many::Joined(c)
+    } else if matches!(a.get_action(), ArgAction::Append) {
+        // Repeated before listed: `--f=-1 --f=-2` takes a value that looks
+        // like a flag, where `--f -1 -2` would not.
+        Many::Repeated
     } else if a.get_num_args().is_some_and(|r| r.max_values() > 1) {
         Many::Listed
-    } else if matches!(a.get_action(), ArgAction::Append) {
-        Many::Repeated
     } else {
         Many::One
     }
