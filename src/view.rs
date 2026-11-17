@@ -28,7 +28,7 @@ use ratatui::crossterm::event::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType};
 use ratatui::Frame;
 use std::cell::{Cell, RefCell};
 use std::io::{self, IsTerminal, Write};
@@ -150,12 +150,61 @@ pub fn need_terminal(instead: &str) -> io::Result<()> {
 /// [`Tui::stop_requested`]), and work under way finishes first. Log
 /// records raised while it is up are held back and written once the
 /// normal screen is back, or as work between views runs.
+///
+/// A `Tui` started while another has the screen up (a view run from
+/// inside another's key handler or work) joins that screen rather than
+/// bringing up one of its own: it draws on it, gives back the modes and
+/// the normal screen as it found them when it ends, and never restores
+/// the terminal, which the `Tui` that brought it up does, once.
 pub struct Tui<'s> {
     session: &'s Session,
+    /// What it draws on, while it is up ([`Role`]).
     terminal: Option<ratatui::DefaultTerminal>,
+    role: Role,
     /// The modes the screen has on now.
     modes: Modes,
     _held: crate::logs::Hold,
+}
+
+/// A [`Tui`]'s part in the screen it draws on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// No screen yet, or one gone since.
+    Down,
+    /// It brought the screen up and restores it as it is dropped.
+    Owner,
+    /// It joined a screen another `Tui` brought up: the modes it had then,
+    /// and whether it was shown or handed off for work.
+    Guest { modes: Modes, shown: bool },
+}
+
+/// How a [`Tui`] comes up for a view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rise {
+    /// The session's screen is down: bring it up, as its owner.
+    Bring,
+    /// Another `Tui` has it up: join it, as a guest.
+    Join,
+    /// It is up already and this `Tui`'s: switch the modes only.
+    Switch,
+}
+
+impl Role {
+    /// How to come up with the session's screen up or not. A screen gone
+    /// down under this `Tui` (restored by another) is brought up anew.
+    fn rise(self, screen_up: bool) -> Rise {
+        match (self, screen_up) {
+            (_, false) => Rise::Bring,
+            (Role::Down, true) => Rise::Join,
+            (Role::Owner | Role::Guest { .. }, true) => Rise::Switch,
+        }
+    }
+
+    /// Whether a `Tui` in this role is kept for the next view
+    /// ([`run_view`]): only the screen's owner, which must restore it.
+    fn kept(self) -> bool {
+        self == Role::Owner
+    }
 }
 
 impl<'s> Tui<'s> {
@@ -164,6 +213,7 @@ impl<'s> Tui<'s> {
         Self {
             session,
             terminal: None,
+            role: Role::Down,
             modes: Modes::new(),
             _held: crate::logs::hold(),
         }
@@ -211,6 +261,7 @@ impl<'s> Tui<'s> {
             unreachable!("the screen is up");
         };
         let mut redraw = true;
+        let mut joins = JOINS.get();
         // Ticks keep time while events come: a stream of them must not
         // keep a view from its background work.
         let mut next_tick = Instant::now() + TICK;
@@ -218,6 +269,12 @@ impl<'s> Tui<'s> {
             if session.stop_requested() {
                 screen.quit();
                 break;
+            }
+            if JOINS.get() != joins {
+                // A view joined this screen and drew over it: drawn whole.
+                joins = JOINS.get();
+                forget(terminal)?;
+                redraw = true;
             }
             if redraw {
                 session.draw(terminal, |f| screen.render(f))?;
@@ -281,13 +338,34 @@ impl<'s> Tui<'s> {
         })
     }
 
-    /// The screen, brought up with `modes` if it is not up yet, else
-    /// switched to them.
+    /// The screen, brought up with `modes` if it is not up yet, joined if
+    /// another `Tui` has it up, else switched to them.
     fn up(&mut self, modes: Modes) -> io::Result<()> {
-        if self.terminal.is_none() {
-            self.terminal = Some(self.session.terminal_with(modes)?);
-        } else if modes != self.modes {
-            self.session.set_modes(modes)?;
+        match self.role.rise(self.session.screen_up()) {
+            Rise::Bring => {
+                (self.terminal, self.role) = (None, Role::Down);
+                self.terminal = Some(self.session.terminal_with(modes)?);
+                self.role = Role::Owner;
+            }
+            Rise::Join => {
+                let (then, shown) = (self.session.modes(), crate::screen_shown());
+                if !shown {
+                    // Joined from work off the screen: taken back for the
+                    // view, handed off again as it ends.
+                    self.session.take_back()?;
+                }
+                self.role = Role::Guest { modes: then, shown };
+                let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
+                let mut terminal = ratatui::Terminal::new(backend)?;
+                forget(&mut terminal)?;
+                self.terminal = Some(terminal);
+                self.session.set_modes(modes)?;
+            }
+            Rise::Switch => {
+                if modes != self.modes {
+                    self.session.set_modes(modes)?;
+                }
+            }
         }
         self.modes = modes;
         Ok(())
@@ -308,11 +386,35 @@ impl<'s> Tui<'s> {
 }
 
 impl Drop for Tui<'_> {
+    /// The owner restores the terminal; a guest gives the screen back to
+    /// its host as it found it, to be drawn whole.
     fn drop(&mut self) {
-        if self.terminal.take().is_some() {
-            self.session.restore();
+        drop(self.terminal.take());
+        match std::mem::replace(&mut self.role, Role::Down) {
+            Role::Down => {}
+            Role::Owner => self.session.restore(),
+            Role::Guest { modes, shown } => {
+                if !self.session.screen_up() {
+                    return;
+                }
+                if modes != self.modes {
+                    let _ = self.session.set_modes(modes);
+                }
+                if shown {
+                    JOINS.set(JOINS.get().wrapping_add(1));
+                } else {
+                    self.session.hand_off();
+                }
+            }
         }
     }
+}
+
+/// Forget what `terminal` drew, clearing the screen, so the next draw
+/// paints all of it; without the cursor query `Terminal::clear` makes.
+fn forget(terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
+    let size = terminal.size()?;
+    terminal.resize(Rect::new(0, 0, size.width, size.height))
 }
 
 /// Hand `event` to `screen`: Ctrl-C to [`Screen::interrupt`], other key
@@ -420,15 +522,10 @@ pub fn panel(title: String, focused: bool, look: &Look) -> Block<'static> {
         .title(Line::from(title).style(Style::reset().patch(ink::highlight(look))))
 }
 
-/// Help line from `(key, what it does)` pairs: each key in the accent,
-/// what it does dim.
+/// Help line from `(key, what it does)` pairs: each key in the accent in
+/// bold, what it does dim ([`crate::widgets::key_line`]).
 pub fn help_line(pairs: &[(&str, &str)], look: &Look) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ")];
-    for (key, what) in pairs {
-        spans.push(Span::styled(key.to_string(), ink::highlight(look)));
-        spans.push(Span::styled(format!(" {what}  "), look.hint));
-    }
-    Line::from(spans)
+    crate::widgets::key_line(pairs, look)
 }
 
 /// Footer while typing: `prompt`, the text so far with a cursor, then keys.
@@ -454,24 +551,12 @@ pub fn session_keys() -> Vec<(String, String)> {
 
 /// The session keys as a help line; none for no keys.
 fn keys_line(keys: &[(String, String)], look: &Look) -> Option<Line<'static>> {
-    if keys.is_empty() {
-        return None;
-    }
-    let pairs: Vec<_> = keys.iter().map(|(k, w)| (k.as_str(), w.as_str())).collect();
-    Some(help_line(&pairs, look))
+    (!keys.is_empty()).then(|| crate::widgets::key_line(keys, look))
 }
 
 /// The session keys drawn over the right end of `area`'s top row, the
 /// title there giving way, so the detach key is always on screen.
-pub fn draw_session_keys(frame: &mut Frame, area: Rect, keys: &[(String, String)], look: &Look) {
-    let Some(line) = keys_line(keys, look).filter(|_| area.height > 0) else {
-        return;
-    };
-    let width = (line.width() as u16).min(area.width);
-    let at = Rect::new(area.right() - width, area.y, width, 1);
-    frame.render_widget(Clear, at);
-    frame.render_widget(Paragraph::new(line), at);
-}
+pub use crate::widgets::draw_session_keys;
 
 thread_local! {
     /// Columns the session keys take at the right end of the title row of
@@ -479,8 +564,13 @@ thread_local! {
     static TITLE_KEYS: Cell<u16> = const { Cell::new(0) };
 
     /// The screen the command's views share while its session is up (see
-    /// [`run_view`]), from the first view until [`end_views`].
+    /// [`run_view`]), from the first view until [`end_views`]; out while a
+    /// view runs on it.
     static VIEWS: RefCell<Option<Tui<'static>>> = const { RefCell::new(None) };
+
+    /// How many [`Tui`]s have joined another's screen and left it, so the
+    /// host draws whole what they drew over.
+    static JOINS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Columns the session keys take at the right end of the title row of the
@@ -628,16 +718,26 @@ pub fn run_view<S: Screen>(
         let plain = Session::plain(tool);
         return run_framed(&mut Tui::new(&plain), tool, look, screen, on_key);
     };
-    // Taken out while the view runs, so a view started from inside another
-    // gets a screen of its own rather than a second borrow.
+    // Taken out while the view runs: a view started from inside another
+    // finds none, and joins the screen the outer one has up as a guest
+    // that never restores it.
     let mut tui = VIEWS
         .with_borrow_mut(Option::take)
         .unwrap_or_else(|| Tui::new(session));
     let shown = run_framed(&mut tui, tool, look, screen, on_key);
-    VIEWS.with_borrow_mut(|views| {
-        views.get_or_insert(tui);
-    });
+    keep(tui);
     shown
+}
+
+/// Keep `tui` for the next view if it owns the screen ([`Role::kept`]),
+/// in place of any kept meanwhile, which goes; else let it go.
+fn keep(tui: Tui<'static>) {
+    let gone = if tui.role.kept() {
+        VIEWS.with_borrow_mut(|views| views.replace(tui))
+    } else {
+        Some(tui)
+    };
+    drop(gone);
 }
 
 /// [`run_view`] on `tui`.
@@ -688,9 +788,7 @@ pub fn work<T>(f: impl FnOnce() -> T) -> io::Result<T> {
         None => Ok(f()),
     };
     if let Some(t) = tui {
-        VIEWS.with_borrow_mut(|views| {
-            views.get_or_insert(t);
-        });
+        keep(t);
     }
     out
 }

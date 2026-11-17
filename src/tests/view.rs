@@ -158,3 +158,39 @@ fn a_view_asks_for_the_mouse_only_when_it_takes_it() {
             .keyboard_enhancement(Keyboard::Off)
     );
 }
+
+#[test]
+fn a_view_inside_another_joins_its_screen_and_the_outer_one_restores_it() {
+    // The outer view: no screen yet, so it brings one up and owns it.
+    let outer = Role::Down;
+    assert_eq!(outer.rise(false), Rise::Bring);
+    let outer = Role::Owner;
+    // The inner view finds no kept screen (the outer has it out) and a
+    // screen up: it joins as a guest, never kept and never restoring.
+    let inner = Role::Down;
+    assert_eq!(inner.rise(true), Rise::Join);
+    let inner = Role::Guest {
+        modes: Modes::new(),
+        shown: true,
+    };
+    assert_eq!(inner.rise(true), Rise::Switch);
+    assert!(!inner.kept(), "a guest goes as its view ends");
+    // The outer view is kept for the next, which only switches modes.
+    assert!(outer.kept());
+    assert_eq!(outer.rise(true), Rise::Switch);
+    // A screen gone down under a kept view is brought up anew.
+    assert_eq!(outer.rise(false), Rise::Bring);
+    assert_eq!(inner.rise(false), Rise::Bring);
+    assert!(!Role::Down.kept());
+}
+
+#[test]
+fn a_view_that_never_came_up_is_not_kept_and_restores_nothing() {
+    let tool = Tool::new("tool");
+    let session = Session::plain(&tool);
+    let tui = Tui::new(&session);
+    assert_eq!(tui.role, Role::Down);
+    assert!(tui.terminal.is_none());
+    drop(tui);
+    assert!(!session.screen_up());
+}

@@ -227,9 +227,14 @@ fn a_menu_shows_its_question_options_the_selected_detail_and_keys() {
 }
 
 #[test]
-fn a_long_question_wraps_between_words_and_is_cut_at_the_last_line() {
-    assert_eq!(wrap("one two three", 7, 3), ["one two", "three"]);
-    assert_eq!(wrap("aa bb cc dd ee", 5, 2), ["aa bb", "cc d…"]);
-    assert_eq!(wrap("", 4, 3), [""]);
-    assert!(wrap("x", 4, 0).is_empty());
+fn a_key_line_lights_the_keys_in_the_accent_in_bold() {
+    let look = Look::terminal();
+    let line = key_line(&[("q", "quit"), ("s", "save")], &look);
+    let keys: Vec<_> = line
+        .spans
+        .iter()
+        .filter(|s| s.style == crate::ink::highlight(&look))
+        .map(|s| s.content.to_string())
+        .collect();
+    assert_eq!(keys, ["q", "s"]);
 }
