@@ -44,8 +44,8 @@ fn spawned_work_answers_even_when_it_panics() {
 fn a_pending_answer_keeps_its_own_error_type() {
     #[derive(Debug, PartialEq)]
     struct Mine(String);
-    impl From<Stopped> for Mine {
-        fn from(s: Stopped) -> Self {
+    impl From<Failed> for Mine {
+        fn from(s: Failed) -> Self {
             Self(s.to_string())
         }
     }

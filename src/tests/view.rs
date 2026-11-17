@@ -109,7 +109,7 @@ fn help_and_input_lines_light_the_keys() {
     let keys: Vec<_> = line
         .spans
         .iter()
-        .filter(|s| s.style == ink::highlight(&look))
+        .filter(|s| s.style == look.highlight())
         .map(|s| s.content.to_string())
         .collect();
     assert_eq!(keys, ["q", "s"]);

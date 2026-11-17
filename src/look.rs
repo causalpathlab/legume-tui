@@ -63,6 +63,12 @@ impl Look {
         )
     }
 
+    /// Key names, typed values, the value in focus: the accent in bold.
+    #[must_use]
+    pub const fn highlight(&self) -> Style {
+        self.accent.add_modifier(Modifier::BOLD)
+    }
+
     /// This look with `accent` for what wants attention.
     #[must_use]
     pub const fn with_accent(mut self, accent: Style) -> Self {

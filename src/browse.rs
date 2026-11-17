@@ -15,6 +15,7 @@
 //! listing, every file on request).
 
 use crate::look::Look;
+use crate::text::{middle, short, tail, wrap};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -797,12 +798,15 @@ impl<A> Item<A> {
 }
 
 /// The entries shown, as indices into the entries, for the typed text,
-/// [`Browser::all`] and the folder they were found for.
+/// [`Browser::all`] and the folder they were found for, with the widest
+/// name among them.
 struct ShownCache {
     filter: String,
     all: bool,
     dir: PathBuf,
     at: Vec<usize>,
+    /// The widest name shown, a folder's `/` with it, at most 36.
+    name_w: usize,
 }
 
 /// Every name in a folder, sorted, each told whether it is a folder.
@@ -869,6 +873,9 @@ pub struct Browser<W: Wanted> {
     /// The cursor was moved by hand: arriving files leave it be.
     moved: bool,
     grace: Duration,
+    /// While a typed path loads folder after folder, the one deadline
+    /// their waits share: none, for each wait its own grace.
+    until: Option<Option<Instant>>,
 }
 
 impl<W: Wanted> Browser<W> {
@@ -906,6 +913,7 @@ impl<W: Wanted> Browser<W> {
             select: None,
             moved: false,
             grace,
+            until: None,
         };
         b.read(select);
         b
@@ -968,11 +976,15 @@ impl<W: Wanted> Browser<W> {
         self.wait();
     }
 
-    /// Take what the listings find for at most the grace period.
+    /// Take what the listings find for at most the grace period, or until
+    /// the deadline a typed path's folders share.
     fn wait(&mut self) {
-        let until = Instant::now().checked_add(self.grace);
+        let until = self
+            .until
+            .unwrap_or_else(|| Instant::now().checked_add(self.grace));
         let on = self.current().map(|e| e.name().to_string());
         let mut came = false;
+        let mut ended = false;
         while let Some(l) = self.listings.first() {
             let got = match until {
                 Some(t) => {
@@ -991,19 +1003,22 @@ impl<W: Wanted> Browser<W> {
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.listings.remove(0);
+                    ended = true;
                 }
             }
         }
-        if came {
+        if came || (ended && self.files_came) {
             self.settle(on);
             self.follow_again();
         }
     }
 
-    /// Take what the listings found since; whether anything came.
+    /// Take what the listings found since; whether anything came, or the
+    /// best file was found at the end.
     pub fn poll(&mut self) -> bool {
         let on = self.current().map(|e| e.name().to_string());
         let mut came = false;
+        let mut ended = false;
         let mut i = 0;
         while i < self.listings.len() {
             match self.listings[i].rx.try_recv() {
@@ -1014,14 +1029,16 @@ impl<W: Wanted> Browser<W> {
                 Err(mpsc::TryRecvError::Empty) => i += 1,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.listings.remove(i);
+                    ended = true;
                 }
             }
         }
-        if came {
+        let settle = came || (ended && self.files_came);
+        if settle {
             self.settle(on);
             self.follow_again();
         }
-        came
+        settle
     }
 
     /// Follow a typed path that waited for this folder's names, now they
@@ -1097,11 +1114,12 @@ impl<W: Wanted> Browser<W> {
         *self.shown_at.get_mut() = None;
     }
 
-    /// Find the best file once files came, and place the cursor: on the
-    /// entry asked for, else the best file, else the first after `..`;
-    /// once moved by hand, on `on`, the entry it was on.
+    /// Find the best file once files came and none is left to describe
+    /// (a listing that ends leaves none), and place the cursor: on the entry asked
+    /// for, else the best file, else the first after `..`; once moved by
+    /// hand, on `on`, the entry it was on.
     fn settle(&mut self, on: Option<String>) {
-        if std::mem::take(&mut self.files_came) {
+        if self.reading() == 0 && std::mem::take(&mut self.files_came) {
             let files: Vec<(&str, &W::About)> = self
                 .entries
                 .iter()
@@ -1146,6 +1164,18 @@ impl<W: Wanted> Browser<W> {
     /// Decided from the names the folders' listings found, never by reading
     /// the disk here: a folder not named yet is followed once it is.
     fn follow(&mut self) {
+        let outer = self.until.is_none();
+        if outer {
+            self.until = Some(Instant::now().checked_add(self.grace));
+        }
+        self.follow_steps();
+        if outer {
+            self.until = None;
+        }
+    }
+
+    /// [`Self::follow`]'s steps, each folder's wait under one deadline.
+    fn follow_steps(&mut self) {
         self.unsure = false;
         loop {
             let Some((folder, name)) = self.typed_path() else {
@@ -1245,6 +1275,12 @@ impl<W: Wanted> Browser<W> {
     /// [`Self::shown`] as indices into the entries, found again only once
     /// the entries, the typed text, [`Self::all`] or the folder changed.
     fn shown_at(&self) -> Ref<'_, [usize]> {
+        Ref::map(self.shown_cache(), |c| c.at.as_slice())
+    }
+
+    /// The entries shown and their widest name, found again only once
+    /// the entries, the typed text, [`Self::all`] or the folder changed.
+    fn shown_cache(&self) -> Ref<'_, ShownCache> {
         let fresh = self
             .shown_at
             .borrow()
@@ -1262,17 +1298,22 @@ impl<W: Wanted> Browser<W> {
                         _ => (hidden || !it.lower.starts_with('.')) && it.lower.contains(&f),
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            let name_w = at
+                .iter()
+                .map(|&i| self.entries[i].entry.name().chars().count() + 1)
+                .max()
+                .unwrap_or(0)
+                .min(36);
             *self.shown_at.borrow_mut() = Some(ShownCache {
                 filter: self.filter.clone(),
                 all: self.all,
                 dir: self.dir.clone(),
                 at,
+                name_w,
             });
         }
-        Ref::map(self.shown_at.borrow(), |c| {
-            c.as_ref().map_or(&[][..], |c| c.at.as_slice())
-        })
+        Ref::map(self.shown_at.borrow(), |c| c.as_ref().expect("just made"))
     }
 
     /// How many entries are shown.
@@ -1570,16 +1611,6 @@ impl<W: Wanted> Browser<W> {
         }
     }
 
-    /// The widest name shown, a folder's `/` with it, at most 36.
-    fn name_width(&self, shown: &[&Entry<W::About>]) -> usize {
-        shown
-            .iter()
-            .map(|e| e.name().chars().count() + 1)
-            .max()
-            .unwrap_or(0)
-            .min(36)
-    }
-
     /// Whether rows have a column for marks and the star.
     fn mark_column(&self, header: &Header) -> bool {
         self.want.many() || (header.star.is_some() && self.best.is_some())
@@ -1610,8 +1641,22 @@ impl<W: Wanted> Browser<W> {
             return (full, shown, false);
         }
         let keep = e.name().chars().count().saturating_sub(over).max(1);
-        let (text, shown) = self.text(e, &cut_middle(e.name(), keep), name_w.min(keep + 1));
-        (fit(&text, room), shown, true)
+        let (text, shown) = self.text(e, &middle(e.name(), keep), name_w.min(keep + 1));
+        (short(&text, room), shown, true)
+    }
+
+    /// The columns a row's text has in `width`: less the cursor's `▸` and,
+    /// with `marks`, the mark column.
+    fn room(width: usize, marks: bool) -> usize {
+        width.saturating_sub(2 + if marks { 2 } else { 0 })
+    }
+
+    /// The cursor's entry fitted to its row, `width` wide, with `header`'s
+    /// mark column.
+    fn cursor_fitted(&self, header: &Header, width: usize) -> Option<(String, String, bool)> {
+        let room = Self::room(width, self.mark_column(header));
+        let name_w = self.shown_cache().name_w;
+        self.current().map(|e| self.fitted(e, name_w, room))
     }
 
     /// The `rows` entries around the cursor, `width` wide: `▸` by the
@@ -1621,25 +1666,40 @@ impl<W: Wanted> Browser<W> {
     /// the rows shown are drawn.
     #[must_use]
     pub fn rows(&self, rows: usize, width: usize, look: &Look) -> Vec<Line<'static>> {
-        let header = self.want.header();
-        let shown = self.shown();
-        let name_w = self.name_width(&shown);
-        let marks = self.mark_column(&header);
-        let room = width.saturating_sub(2 + if marks { 2 } else { 0 });
-        let first = first_visible(self.row, shown.len(), rows);
-        shown
+        self.rows_with(&self.want.header(), None, rows, width, look)
+    }
+
+    /// [`Self::rows`] under `header`, the cursor's row `cursor` when it
+    /// was fitted already.
+    fn rows_with(
+        &self,
+        header: &Header,
+        mut cursor: Option<(String, String, bool)>,
+        rows: usize,
+        width: usize,
+        look: &Look,
+    ) -> Vec<Line<'static>> {
+        let cache = self.shown_cache();
+        let marks = self.mark_column(header);
+        let room = Self::room(width, marks);
+        let first = first_visible(self.row, cache.at.len(), rows);
+        cache
+            .at
             .iter()
             .enumerate()
             .skip(first)
             .take(rows)
-            .map(|(i, e)| {
+            .map(|(i, &k)| {
+                let e = &self.entries[k].entry;
                 let at = i == self.row;
                 let mut spans = vec![Span::styled(if at { "▸ " } else { "  " }, look.bold)];
                 if marks {
-                    let path = || self.dir.join(e.name());
                     let m = match e {
                         Entry::File(n, _) | Entry::Other(n) => {
-                            if self.want.many() && self.marks.contains(&path()) {
+                            if self.want.many()
+                                && !self.marks.is_empty()
+                                && self.marks.contains(&self.dir.join(n))
+                            {
                                 "● "
                             } else if header.star.is_some() && self.best.as_deref() == Some(n) {
                                 "★ "
@@ -1651,7 +1711,8 @@ impl<W: Wanted> Browser<W> {
                     };
                     spans.push(Span::styled(m, look.bold));
                 }
-                let (text, name, _) = self.fitted(e, name_w, room);
+                let fitted = if at { cursor.take() } else { None };
+                let (text, name, _) = fitted.unwrap_or_else(|| self.fitted(e, cache.name_w, room));
                 let style = match e {
                     _ if at => look.selected,
                     Entry::File(..) => look.page,
@@ -1674,6 +1735,11 @@ impl<W: Wanted> Browser<W> {
     /// being listed, that nothing matches, or that there is nothing wanted.
     #[must_use]
     pub fn status(&self) -> Option<Cow<'static, str>> {
+        self.status_with(&self.want.header())
+    }
+
+    /// [`Self::status`] under `header`.
+    fn status_with(&self, header: &Header) -> Option<Cow<'static, str>> {
         if let Some(t) = self.listing() {
             let spin = crate::work::spinner_frame(t);
             let reading = match self.reading() {
@@ -1693,7 +1759,7 @@ impl<W: Wanted> Browser<W> {
         if !self.filter.is_empty() && self.entries.iter().any(|it| it.entry.is_file()) {
             return Some(NOTHING_MATCHES.into());
         }
-        Some(format!("no {} here", self.want.header().what).into())
+        Some(format!("no {} here", header.what).into())
     }
 
     /// The browser's lines, at most `height` tall and `width` wide: a side
@@ -1704,10 +1770,13 @@ impl<W: Wanted> Browser<W> {
     /// under the cursor is shown whole above the footer.
     #[must_use]
     pub fn lines(&self, height: usize, width: usize, look: &Look) -> Vec<Line<'static>> {
-        let (head, foot) = self.frame(width, look);
+        let h = self.want.header();
+        let cursor = self.cursor_fitted(&h, width);
+        let cut = cursor.as_ref().is_some_and(|c| c.2);
+        let (head, foot) = self.frame(&h, cut, width, look);
         let rows = height.saturating_sub(head.len() + foot.len()).max(3);
         let mut out = head;
-        out.extend(self.rows(rows, width, look));
+        out.extend(self.rows_with(&h, cursor, rows, width, look));
         out.extend(foot);
         out
     }
@@ -1718,8 +1787,10 @@ impl<W: Wanted> Browser<W> {
     /// [`Self::has_mark_column`], columns 2 and 3 of a row are its mark.
     #[must_use]
     pub fn row_at(&self, height: usize, width: usize, line: usize) -> Option<usize> {
+        let h = self.want.header();
+        let cut = self.cursor_fitted(&h, width).is_some_and(|c| c.2);
         // The layout does not depend on the styles.
-        let (head, foot) = self.frame(width, &Look::terminal());
+        let (head, foot) = self.frame(&h, cut, width, &Look::terminal());
         let rows = height.saturating_sub(head.len() + foot.len()).max(3);
         let len = self.shown_len();
         let first = first_visible(self.row, len, rows);
@@ -1733,10 +1804,16 @@ impl<W: Wanted> Browser<W> {
         self.mark_column(&self.want.header())
     }
 
-    /// [`Self::lines`]' header and footer, `width` wide.
-    fn frame(&self, width: usize, look: &Look) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-        let h = self.want.header();
-        let line = |s: &str, style: Style| Line::from(Span::styled(fit(s, width), style));
+    /// [`Self::lines`]' header and footer under `h`, `width` wide; `cut`
+    /// when the cursor's row cuts its name.
+    fn frame(
+        &self,
+        h: &Header,
+        cut: bool,
+        width: usize,
+        look: &Look,
+    ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+        let line = |s: &str, style: Style| Line::from(Span::styled(short(s, width), style));
         let mut head = vec![line(&format!(" {}", h.title), look.bold)];
         head.extend(h.notes.iter().map(|n| line(&format!(" {n}"), look.hint)));
         let here = shown(&self.dir);
@@ -1760,19 +1837,14 @@ impl<W: Wanted> Browser<W> {
 
         let mut foot = Vec::new();
         // The name under the cursor whole when its row cuts it.
-        let shown = self.shown();
-        let marks = if self.mark_column(&h) { 2 } else { 0 };
-        if let Some(e) = shown.get(self.row) {
-            let room = width.saturating_sub(2 + marks);
-            if self.fitted(e, self.name_width(&shown), room).2 {
-                let w = width.saturating_sub(3);
-                for (k, piece) in wrap(e.name(), w).into_iter().enumerate() {
-                    let lead = if k == 0 { " ▸ " } else { "   " };
-                    foot.push(line(&format!("{lead}{piece}"), look.bold));
-                }
+        if let Some(e) = self.current().filter(|_| cut) {
+            let w = width.saturating_sub(3);
+            for (k, piece) in wrap(e.name(), w, w).into_iter().enumerate() {
+                let lead = if k == 0 { " ▸ " } else { "   " };
+                foot.push(line(&format!("{lead}{piece}"), look.bold));
             }
         }
-        if let Some(s) = self.status() {
+        if let Some(s) = self.status_with(h) {
             foot.push(line(&format!("  {s}"), look.hint));
         }
         foot.push(Line::from(""));
@@ -1801,43 +1873,6 @@ impl<W: Wanted> Browser<W> {
         ));
         (head, foot)
     }
-}
-
-/// `s` in at most `n` characters.
-fn fit(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
-}
-
-/// The last `n` characters of `s`, `…` marking a cut at the start.
-fn tail(s: &str, n: usize) -> String {
-    let len = s.chars().count();
-    if len <= n {
-        return s.to_string();
-    }
-    let mut out = String::from("…");
-    out.extend(s.chars().skip(len + 1 - n.max(1)));
-    out
-}
-
-/// `s` in pieces of at most `n` characters.
-fn wrap(s: &str, n: usize) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    chars.chunks(n.max(1)).map(|c| c.iter().collect()).collect()
-}
-
-/// `s` in at most `n` characters, `…` marking a cut in the middle, so
-/// names sharing a prefix still differ.
-fn cut_middle(s: &str, n: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= n {
-        return s.to_string();
-    }
-    let end = n.saturating_sub(1) / 2;
-    let start = n.saturating_sub(1) - end;
-    let mut out: String = chars[..start].iter().collect();
-    out.push('…');
-    out.extend(&chars[chars.len() - end..]);
-    out
 }
 
 #[cfg(test)]

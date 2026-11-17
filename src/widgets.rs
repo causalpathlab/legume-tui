@@ -9,6 +9,7 @@
 //! [`crate::chrome::Chrome::popup`].
 
 use crate::look::Look;
+pub use crate::text::{bar, filled};
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -236,7 +237,7 @@ pub fn tab_bar<T: Clone>(
 /// focus), what it does as a hint. [`crate::view::help_line`] is this.
 #[must_use]
 pub fn key_line<K: AsRef<str>, W: AsRef<str>>(keys: &[(K, W)], look: &Look) -> Line<'static> {
-    let key_style = crate::ink::highlight(look);
+    let key_style = look.highlight();
     let mut spans = vec![Span::raw(" ")];
     for (key, what) in keys {
         spans.push(Span::styled(key.as_ref().to_string(), key_style));
@@ -264,23 +265,6 @@ pub fn draw_session_keys<K: AsRef<str>, W: AsRef<str>>(
     let at = Rect::new(area.right() - width, area.y, width, 1);
     frame.render_widget(Clear, at);
     frame.render_widget(Paragraph::new(line), at);
-}
-
-/// How many of `width` cells a bar shows filled for `done` of `total`:
-/// whole cells, so a bar is full only when it is done.
-#[must_use]
-pub fn filled(done: u64, total: u64, width: usize) -> usize {
-    match total {
-        0 => 0,
-        _ => (width as u128 * u128::from(done.min(total)) / u128::from(total)) as usize,
-    }
-}
-
-/// A `width`-cell bar for `done` of `total` as text: `█` filled, `░` not.
-#[must_use]
-pub fn bar(done: u64, total: u64, width: usize) -> String {
-    let full = filled(done, total, width);
-    format!("{}{}", "█".repeat(full), "░".repeat(width - full))
 }
 
 /// A `width`-cell bar for `done` of `total` as [`bar`] draws it: the filled

@@ -43,14 +43,14 @@ pub fn spinner_frame_every(elapsed: Duration, period: Duration) -> char {
 
 /// Why work came back without its own answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Stopped {
+pub enum Failed {
     /// It panicked, with the panic's message.
     Panicked { what: String, message: String },
     /// It ended and left nothing to read: the answer was taken already.
     NoResult { what: String },
 }
 
-impl Stopped {
+impl Failed {
     /// `what` panicked with `panic`.
     #[must_use]
     pub fn panicked(what: &str, panic: &(dyn Any + Send)) -> Self {
@@ -61,7 +61,7 @@ impl Stopped {
     }
 }
 
-impl std::fmt::Display for Stopped {
+impl std::fmt::Display for Failed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Panicked { what, message } => write!(f, "{what} panicked: {message}"),
@@ -70,12 +70,12 @@ impl std::fmt::Display for Stopped {
     }
 }
 
-impl std::error::Error for Stopped {}
+impl std::error::Error for Failed {}
 
 /// The text of the error, for work whose errors are text.
-impl From<Stopped> for String {
-    fn from(stopped: Stopped) -> Self {
-        stopped.to_string()
+impl From<Failed> for String {
+    fn from(failed: Failed) -> Self {
+        failed.to_string()
     }
 }
 
@@ -195,14 +195,14 @@ impl<T, E> Pending<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: From<Stopped> + Send + 'static> Pending<T, E> {
+impl<T: Send + 'static, E: From<Failed> + Send + 'static> Pending<T, E> {
     /// `work` on a thread of its own; a panic in it is its answer
-    /// ([`Stopped::Panicked`], as "the work").
+    /// ([`Failed::Panicked`], as "the work").
     pub fn spawn(work: impl FnOnce() -> Result<T, E> + Send + 'static) -> Self {
         let (tx, pending) = Self::pair();
         std::thread::spawn(move || {
             let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
-                .unwrap_or_else(|panic| Err(Stopped::panicked("the work", &*panic).into()));
+                .unwrap_or_else(|panic| Err(Failed::panicked("the work", &*panic).into()));
             let _ = tx.send(out);
         });
         pending
@@ -212,9 +212,9 @@ impl<T: Send + 'static, E: From<Stopped> + Send + 'static> Pending<T, E> {
 /// Run `work` on a thread while `meanwhile` waits here on its [`Pending`]
 /// answer; what `meanwhile` returns, and the work's answer: the one left
 /// in the pending (`meanwhile` may poll it, not take it), else (the work
-/// panicked) [`Stopped::Panicked`] saying `what` panicked, with the
+/// panicked) [`Failed::Panicked`] saying `what` panicked, with the
 /// panic's message.
-pub fn on_thread<T: Send, E: From<Stopped> + Send, R>(
+pub fn on_thread<T: Send, E: From<Failed> + Send, R>(
     what: &str,
     work: impl FnOnce() -> Result<T, E> + Send,
     meanwhile: impl FnOnce(&mut Pending<T, E>) -> R,
@@ -232,8 +232,8 @@ pub fn on_thread<T: Send, E: From<Stopped> + Send, R>(
         pending.poll();
         let out = match (pending.take(), joined) {
             (Some(out), _) => out,
-            (None, Err(panic)) => Err(Stopped::panicked(what, &*panic).into()),
-            (None, Ok(())) => Err(Stopped::NoResult {
+            (None, Err(panic)) => Err(Failed::panicked(what, &*panic).into()),
+            (None, Ok(())) => Err(Failed::NoResult {
                 what: what.to_string(),
             }
             .into()),
@@ -288,7 +288,7 @@ impl<T: Send + Sync + 'static> Loading<T> {
         std::thread::spawn(move || {
             // A panic is an answer too, so a waiter never waits for ever.
             let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
-                .unwrap_or_else(|panic| Err(Stopped::panicked("the work", &*panic).into()));
+                .unwrap_or_else(|panic| Err(Failed::panicked("the work", &*panic).into()));
             let _ = value.set(out);
         });
     }
@@ -355,8 +355,8 @@ impl Tick {
 /// Run `work` on a thread; after [`GRACE`], call `tick` with how far it
 /// has got, again every [`TICK`], until it is done (a popup draws a frame
 /// there). Whether `tick` was called, and the work's answer: a panic in it
-/// is [`Stopped::Panicked`] saying `what` panicked.
-pub fn waiting<T: Send, E: From<Stopped> + Send>(
+/// is [`Failed::Panicked`] saying `what` panicked.
+pub fn waiting<T: Send, E: From<Failed> + Send>(
     what: &str,
     work: impl FnOnce() -> Result<T, E> + Send,
     tick: impl FnMut(Tick),
@@ -366,7 +366,7 @@ pub fn waiting<T: Send, E: From<Stopped> + Send>(
 
 /// [`waiting`], for work that counts off `total` steps on the counter it is
 /// given; each [`Tick`] says how many.
-pub fn counting<T: Send, E: From<Stopped> + Send>(
+pub fn counting<T: Send, E: From<Failed> + Send>(
     what: &str,
     total: usize,
     work: impl FnOnce(&AtomicUsize) -> Result<T, E> + Send,
@@ -400,7 +400,7 @@ pub fn counting<T: Send, E: From<Stopped> + Send>(
 /// and the seconds on stderr's own line, rewritten in place and wiped when
 /// done; nothing when stderr is not a terminal. For work before a screen
 /// is up, so the terminal never sits blank without a word.
-pub fn during_inline<T: Send, E: From<Stopped> + Send>(
+pub fn during_inline<T: Send, E: From<Failed> + Send>(
     what: &str,
     work: impl FnOnce() -> Result<T, E> + Send,
 ) -> Result<T, E> {
@@ -409,7 +409,7 @@ pub fn during_inline<T: Send, E: From<Stopped> + Send>(
 
 /// [`during_inline`], with how many of `total` steps `work` has counted
 /// off on the counter it is given.
-pub fn during_inline_counting<T: Send, E: From<Stopped> + Send>(
+pub fn during_inline_counting<T: Send, E: From<Failed> + Send>(
     what: &str,
     total: usize,
     work: impl FnOnce(&AtomicUsize) -> Result<T, E> + Send,
