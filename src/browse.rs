@@ -19,7 +19,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::cell::{Ref, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -681,8 +682,10 @@ pub const LIST_GRACE: Duration = Duration::from_secs(60);
 
 /// What the worker listing a folder finds, as it finds it.
 enum Found<A> {
-    /// The folders, by name, and how many files are left to describe.
-    Names(Vec<String>, usize),
+    /// Every name in the folder, sorted, each told whether it is listed as
+    /// a folder (a store is a file), and how many files are left to
+    /// describe. The folders come listed with them.
+    Names(Vec<(String, bool)>, usize),
     /// What [`Wanted::folder`] said of a folder.
     Dir(String, A),
     /// A file described: wanted, or not.
@@ -697,6 +700,8 @@ struct Listing<A> {
     since: Instant,
     /// Files still to describe, once the names have come.
     left: usize,
+    /// Whether it lists only the hidden files.
+    hidden: bool,
 }
 
 impl<A: Send + 'static> Listing<A> {
@@ -709,14 +714,17 @@ impl<A: Send + 'static> Listing<A> {
             rx,
             since: Instant::now(),
             left: 0,
+            hidden,
         }
     }
 }
 
-/// [`Listing::spawn`]'s work: the names first, then each folder's note and
-/// each file described, until the browser stops listening.
+/// [`Listing::spawn`]'s work: the names first, sorted, then each folder's
+/// note and each file described in that order, until the browser stops
+/// listening. Every name is sent, hidden files' too, so a typed path can be
+/// followed from them; only those listed are described.
 fn list_dir<W: Wanted>(dir: &Path, want: &W, hidden: bool, tx: &mpsc::Sender<Found<W::About>>) {
-    let (mut dirs, mut files) = (Vec::new(), Vec::new());
+    let (mut dirs, mut files, mut others) = (Vec::new(), Vec::new(), Vec::new());
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let path = e.path();
@@ -733,9 +741,19 @@ fn list_dir<W: Wanted>(dir: &Path, want: &W, hidden: bool, tx: &mpsc::Sender<Fou
             }
         } else if name.starts_with('.') == hidden {
             files.push((name, path, store));
+        } else if !hidden {
+            others.push(name);
         }
     }
-    let names = dirs.iter().map(|(n, _)| n.clone()).collect();
+    dirs.sort_unstable();
+    files.sort_unstable();
+    let mut names: Vec<(String, bool)> = dirs
+        .iter()
+        .map(|(n, _)| (n.clone(), true))
+        .chain(files.iter().map(|(n, ..)| (n.clone(), false)))
+        .chain(others.into_iter().map(|n| (n, false)))
+        .collect();
+    names.sort_unstable();
     if tx.send(Found::Names(names, files.len())).is_err() {
         return;
     }
@@ -771,6 +789,43 @@ impl<A> Item<A> {
             entry,
         }
     }
+
+    /// Where it sorts: `..`, folders, then files, each by name.
+    fn key(&self) -> (u8, &str) {
+        (self.entry.rank(), self.entry.name())
+    }
+}
+
+/// The entries shown, as indices into the entries, for the typed text,
+/// [`Browser::all`] and the folder they were found for.
+struct ShownCache {
+    filter: String,
+    all: bool,
+    dir: PathBuf,
+    at: Vec<usize>,
+}
+
+/// Every name in a folder, sorted, each told whether it is a folder.
+type Names = Vec<(String, bool)>;
+
+/// Whether `name` is a folder among `names` and no other name begins with
+/// it: a typed path's name to go into at once.
+fn only_folder(names: &[(String, bool)], name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let from = names.partition_point(|(n, _)| n.as_str() < name);
+    let mut begun = names[from..]
+        .iter()
+        .take_while(|(n, _)| n.starts_with(name));
+    matches!((begun.next(), begun.next()), (Some((n, true)), None) if n == name)
+}
+
+/// Whether `name` is a folder among `names`.
+fn is_folder(names: &[(String, bool)], name: &str) -> bool {
+    names
+        .binary_search_by(|(n, _)| n.as_str().cmp(name))
+        .is_ok_and(|i| names[i].1)
 }
 
 /// The browser's state, independent of the terminal so it can be tested.
@@ -778,8 +833,20 @@ pub struct Browser<W: Wanted> {
     /// The folder listed.
     pub dir: PathBuf,
     pub want: W,
-    /// `..` unless at the root, folders, then files, each by name.
+    /// `..` unless at the root, folders, then files, each by name; kept in
+    /// order as they come.
     entries: Vec<Item<W::About>>,
+    /// Every name in the folder, once its listing has named them.
+    names: Option<Names>,
+    /// The names of the folders a typed path has left, by folder, so
+    /// following it back needs no listing.
+    trail: HashMap<PathBuf, Names>,
+    /// A typed path waits for its folder's names to be followed further.
+    unsure: bool,
+    /// The entries shown, made again once what they depend on changes.
+    shown_at: RefCell<Option<ShownCache>>,
+    /// Files came since the best one was chosen.
+    files_came: bool,
     /// Typed text narrows the list to names holding it, any case; typed
     /// from a `/`, it is a path the browser follows.
     pub filter: String,
@@ -823,6 +890,11 @@ impl<W: Wanted> Browser<W> {
             dir: normalize(dir.as_ref()),
             want,
             entries: Vec::new(),
+            names: None,
+            trail: HashMap::new(),
+            unsure: false,
+            shown_at: RefCell::new(None),
+            files_came: false,
             filter: String::new(),
             row: 0,
             best: None,
@@ -849,6 +921,7 @@ impl<W: Wanted> Browser<W> {
     /// to `select` as in [`Self::open`].
     pub fn read(&mut self, select: Option<&str>) {
         self.filter.clear();
+        self.trail.clear();
         self.select = select.map(str::to_string);
         self.load();
     }
@@ -856,6 +929,7 @@ impl<W: Wanted> Browser<W> {
     /// List the folder again, the cursor and the typed text kept.
     pub fn refresh(&mut self) {
         self.select = self.current().map(|e| e.name().to_string());
+        self.trail.clear();
         self.load();
         self.ask_hidden();
     }
@@ -870,6 +944,9 @@ impl<W: Wanted> Browser<W> {
             .map(|_| Item::new(Entry::Up))
             .into_iter()
             .collect();
+        self.names = None;
+        self.unsure = false;
+        self.entries_changed();
         self.best = None;
         self.hidden = false;
         self.moved = false;
@@ -919,6 +996,7 @@ impl<W: Wanted> Browser<W> {
         }
         if came {
             self.settle(on);
+            self.follow_again();
         }
     }
 
@@ -941,8 +1019,18 @@ impl<W: Wanted> Browser<W> {
         }
         if came {
             self.settle(on);
+            self.follow_again();
         }
         came
+    }
+
+    /// Follow a typed path that waited for this folder's names, now they
+    /// have come.
+    fn follow_again(&mut self) {
+        if self.unsure && self.names.is_some() {
+            self.follow();
+            self.ask_hidden();
+        }
     }
 
     /// Whether the folder is still being listed, and for how long.
@@ -957,21 +1045,34 @@ impl<W: Wanted> Browser<W> {
         self.listings.iter().map(|l| l.left).sum()
     }
 
-    /// Add what listing `i` found, out of order until [`Self::settle`].
+    /// Add what listing `i` found, each entry in its place.
     fn take(&mut self, i: usize, found: Found<W::About>) {
         match found {
-            Found::Names(dirs, files) => {
+            Found::Names(names, files) => {
                 self.listings[i].left = files;
-                let dirs = dirs.into_iter().map(|d| Item::new(Entry::Dir(d, None)));
-                self.entries.extend(dirs);
+                // Folders sort after `..` and before every file.
+                let at = usize::from(matches!(
+                    self.entries.first().map(|it| &it.entry),
+                    Some(Entry::Up)
+                ));
+                let dirs = names
+                    .iter()
+                    .filter(|(_, dir)| *dir)
+                    .map(|(n, _)| Item::new(Entry::Dir(n.clone(), None)));
+                self.entries.splice(at..at, dirs);
+                if !self.listings[i].hidden {
+                    self.names = Some(names);
+                }
+                self.entries_changed();
             }
             Found::Dir(name, a) => {
-                let dir = self.entries.iter_mut().find_map(|it| match &mut it.entry {
-                    Entry::Dir(n, about) if *n == name => Some(about),
-                    _ => None,
-                });
-                if let Some(about) = dir {
-                    *about = Some(a);
+                let at = self
+                    .entries
+                    .binary_search_by(|it| it.key().cmp(&(1, name.as_str())));
+                if let Ok(at) = at {
+                    if let Entry::Dir(_, about) = &mut self.entries[at].entry {
+                        *about = Some(a);
+                    }
                 }
             }
             Found::File(name, about) => {
@@ -981,39 +1082,49 @@ impl<W: Wanted> Browser<W> {
                     Some(a) => Entry::File(name, a),
                     None => Entry::Other(name),
                 };
-                self.entries.push(Item::new(entry));
+                let item = Item::new(entry);
+                // Sent in order, so almost always at the end.
+                let at = self.entries.partition_point(|it| it.key() < item.key());
+                self.entries.insert(at, item);
+                self.files_came = true;
+                self.entries_changed();
             }
         }
     }
 
-    /// Order what came, find the best file, and place the cursor: on the
+    /// The entries changed: what is shown is found again.
+    fn entries_changed(&mut self) {
+        *self.shown_at.get_mut() = None;
+    }
+
+    /// Find the best file once files came, and place the cursor: on the
     /// entry asked for, else the best file, else the first after `..`;
     /// once moved by hand, on `on`, the entry it was on.
     fn settle(&mut self, on: Option<String>) {
-        self.entries.sort_by(|a, b| {
-            (a.entry.rank(), a.entry.name()).cmp(&(b.entry.rank(), b.entry.name()))
-        });
-        let files: Vec<(&str, &W::About)> = self
-            .entries
-            .iter()
-            .filter_map(|it| match &it.entry {
-                Entry::File(n, a) => Some((n.as_str(), a)),
-                _ => None,
-            })
-            .collect();
-        self.best = self.want.best(&self.dir, &files);
-        let shown = self.shown();
-        let at = |name: &str| shown.iter().position(|e| e.name() == name);
+        if std::mem::take(&mut self.files_came) {
+            let files: Vec<(&str, &W::About)> = self
+                .entries
+                .iter()
+                .filter_map(|it| match &it.entry {
+                    Entry::File(n, a) => Some((n.as_str(), a)),
+                    _ => None,
+                })
+                .collect();
+            self.best = self.want.best(&self.dir, &files);
+        }
         let row = if self.moved {
-            on.as_deref().and_then(at)
+            on.as_deref().and_then(|n| self.position(n))
         } else {
-            self.select.as_deref().or(self.best.as_deref()).and_then(at)
+            self.select
+                .as_deref()
+                .or(self.best.as_deref())
+                .and_then(|n| self.position(n))
         };
         self.row = row.unwrap_or_else(|| {
             if self.moved {
-                self.row.min(shown.len().saturating_sub(1))
+                self.row.min(self.shown_len().saturating_sub(1))
             } else {
-                past_up(&shown)
+                self.past_up()
             }
         });
     }
@@ -1029,47 +1140,83 @@ impl<W: Wanted> Browser<W> {
     }
 
     /// Follow a typed path, which stays as typed: list its folder as soon
-    /// as that folder exists, and the folder the name after it reaches
-    /// once no other entry there begins with that name (`/data2` lists
-    /// `/data2/` at once; `/data` beside `/data2` waits for a `/`).
+    /// as that folder is known to be there, and the folder the name after
+    /// it reaches once no other entry there begins with that name (`/data2`
+    /// lists `/data2/` at once; `/data` beside `/data2` waits for a `/`).
+    /// Decided from the names the folders' listings found, never by reading
+    /// the disk here: a folder not named yet is followed once it is.
     fn follow(&mut self) {
-        let Some((folder, name)) = self.typed_path() else {
-            return;
-        };
-        let folder: PathBuf = Path::new(folder).components().collect();
-        if !folder.is_dir() {
-            return;
-        }
-        let into = folder.join(name);
-        let only = || {
-            std::fs::read_dir(&folder).map_or(0, |d| {
-                d.flatten()
-                    .filter(|e| e.file_name().to_string_lossy().starts_with(name))
-                    .count()
-            }) == 1
-        };
-        let target = if !name.is_empty() && into.is_dir() && only() {
-            into
-        } else {
-            folder
-        };
-        if target != self.dir {
-            self.dir = target;
+        self.unsure = false;
+        loop {
+            let Some((folder, name)) = self.typed_path() else {
+                return;
+            };
+            let folder = normalize(Path::new(folder));
+            let name = name.to_string();
+            let step = if folder == self.dir {
+                match self.names_of(&folder) {
+                    None => {
+                        self.unsure = true;
+                        return;
+                    }
+                    Some(n) if only_folder(n, &name) => folder.join(&name),
+                    Some(_) => return,
+                }
+            } else if let Ok(below) = folder.strip_prefix(&self.dir) {
+                // One folder down at a time, each one named here first.
+                let Some(next) = below.components().next() else {
+                    return;
+                };
+                let next = next.as_os_str().to_string_lossy().into_owned();
+                match self.names_of(&self.dir) {
+                    None => {
+                        self.unsure = true;
+                        return;
+                    }
+                    Some(n) if is_folder(n, &next) => self.dir.join(next),
+                    Some(_) => return,
+                }
+            } else if self.dir.starts_with(&folder) {
+                // Above: where its name leads, if that folder was listed.
+                match self.trail.get(&folder) {
+                    Some(n) if only_folder(n, &name) => folder.join(&name),
+                    _ => folder,
+                }
+            } else {
+                // Elsewhere: up to where the two meet, then down.
+                self.dir
+                    .components()
+                    .zip(folder.components())
+                    .take_while(|(a, b)| a == b)
+                    .map(|(a, _)| a)
+                    .collect()
+            };
+            if step == self.dir {
+                return;
+            }
+            if let Some(names) = self.names.take() {
+                self.trail.insert(self.dir.clone(), names);
+            }
+            self.dir = step;
             self.select = None;
             self.load();
         }
+    }
+
+    /// The names in `folder`: this one's once listed, else those a typed
+    /// path found there before.
+    fn names_of(&self, folder: &Path) -> Option<&[(String, bool)]> {
+        let here = (folder == self.dir)
+            .then_some(self.names.as_deref())
+            .flatten();
+        here.or_else(|| self.trail.get(folder).map(Vec::as_slice))
     }
 
     /// Whether a typed path reached past what was typed: the folder its
     /// name was completed to.
     fn completed(&self) -> bool {
         self.typed_path().is_some_and(|(folder, name)| {
-            !name.is_empty()
-                && Path::new(folder)
-                    .join(name)
-                    .components()
-                    .collect::<PathBuf>()
-                    == self.dir
+            !name.is_empty() && normalize(&Path::new(folder).join(name)) == self.dir
         })
     }
 
@@ -1089,23 +1236,71 @@ impl<W: Wanted> Browser<W> {
     /// [`Self::all`].
     #[must_use]
     pub fn shown(&self) -> Vec<&Entry<W::About>> {
-        let f = self.narrowing();
-        let hidden = f.starts_with('.');
-        self.entries
+        self.shown_at()
             .iter()
-            .filter(|it| match it.entry {
-                Entry::Up => true,
-                Entry::Other(_) if !self.all => false,
-                _ => (hidden || !it.lower.starts_with('.')) && it.lower.contains(&f),
-            })
-            .map(|it| &it.entry)
+            .map(|&i| &self.entries[i].entry)
             .collect()
+    }
+
+    /// [`Self::shown`] as indices into the entries, found again only once
+    /// the entries, the typed text, [`Self::all`] or the folder changed.
+    fn shown_at(&self) -> Ref<'_, [usize]> {
+        let fresh = self
+            .shown_at
+            .borrow()
+            .as_ref()
+            .is_some_and(|c| c.all == self.all && c.filter == self.filter && c.dir == self.dir);
+        if !fresh {
+            let f = self.narrowing();
+            let hidden = f.starts_with('.');
+            let at = (0..self.entries.len())
+                .filter(|&i| {
+                    let it = &self.entries[i];
+                    match it.entry {
+                        Entry::Up => true,
+                        Entry::Other(_) if !self.all => false,
+                        _ => (hidden || !it.lower.starts_with('.')) && it.lower.contains(&f),
+                    }
+                })
+                .collect();
+            *self.shown_at.borrow_mut() = Some(ShownCache {
+                filter: self.filter.clone(),
+                all: self.all,
+                dir: self.dir.clone(),
+                at,
+            });
+        }
+        Ref::map(self.shown_at.borrow(), |c| {
+            c.as_ref().map_or(&[][..], |c| c.at.as_slice())
+        })
+    }
+
+    /// How many entries are shown.
+    fn shown_len(&self) -> usize {
+        self.shown_at().len()
+    }
+
+    /// Where the entry named `name` is among those shown.
+    fn position(&self, name: &str) -> Option<usize> {
+        self.shown_at()
+            .iter()
+            .position(|&i| self.entries[i].entry.name() == name)
+    }
+
+    /// The first entry shown after `..`, if there is one.
+    fn past_up(&self) -> usize {
+        let at = self.shown_at();
+        let up = at
+            .first()
+            .is_some_and(|&i| matches!(self.entries[i].entry, Entry::Up));
+        usize::from(at.len() > 1 && up)
     }
 
     /// The entry under the cursor.
     #[must_use]
     pub fn current(&self) -> Option<&Entry<W::About>> {
-        self.shown().get(self.row).copied()
+        let i = self.shown_at().get(self.row).copied()?;
+        Some(&self.entries[i].entry)
     }
 
     /// The path of the entry under the cursor: `..` is the parent.
@@ -1125,7 +1320,7 @@ impl<W: Wanted> Browser<W> {
 
     /// Put the cursor on the entry shown named `name`; whether there is one.
     pub fn select(&mut self, name: &str) -> bool {
-        let at = self.shown().iter().position(|e| e.name() == name);
+        let at = self.position(name);
         if let Some(at) = at {
             self.row = at;
             self.moved = true;
@@ -1218,13 +1413,14 @@ impl<W: Wanted> Browser<W> {
         let chord = k
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
-        let last = self.shown().len().saturating_sub(1);
+        let last = self.shown_len().saturating_sub(1);
         let step = |d: isize| moved(self.row, d, last);
         match k.code {
             KeyCode::Esc if self.filter.is_empty() => return Outcome::Cancelled,
             KeyCode::Esc => {
                 let on = self.current().map(|e| e.name().to_string());
                 self.filter.clear();
+                self.trail.clear();
                 self.narrowed(on);
             }
             KeyCode::Up => self.moved_to(step(-1)),
@@ -1286,14 +1482,12 @@ impl<W: Wanted> Browser<W> {
     /// The cursor after the typed text changed: where it was if that still
     /// shows, else on the best file, else on the first entry after `..`.
     fn narrowed(&mut self, on: Option<String>) {
-        let shown = self.shown();
-        let at = |name: &str| shown.iter().position(|e| e.name() == name);
         let row = on
             .as_deref()
             .filter(|n| *n != "..")
-            .and_then(at)
-            .or_else(|| self.best.as_deref().and_then(at))
-            .unwrap_or_else(|| past_up(&shown));
+            .and_then(|n| self.position(n))
+            .or_else(|| self.best.as_deref().and_then(|n| self.position(n)))
+            .unwrap_or_else(|| self.past_up());
         self.moved_to(row);
     }
 
@@ -1335,7 +1529,7 @@ impl<W: Wanted> Browser<W> {
                 } else {
                     let path = self.dir.join(e.name());
                     self.marks.toggle(path);
-                    let last = self.shown().len().saturating_sub(1);
+                    let last = self.shown_len().saturating_sub(1);
                     self.moved_to(moved(self.row, 1, last));
                 }
                 Some(Outcome::Moved)
@@ -1481,7 +1675,7 @@ impl<W: Wanted> Browser<W> {
     #[must_use]
     pub fn status(&self) -> Option<Cow<'static, str>> {
         if let Some(t) = self.listing() {
-            let spin = SPINNER[(t.as_millis() / 100) as usize % SPINNER.len()];
+            let spin = crate::work::spinner_frame(t);
             let reading = match self.reading() {
                 0 => String::new(),
                 1 => " · 1 file to read".into(),
@@ -1489,8 +1683,11 @@ impl<W: Wanted> Browser<W> {
             };
             return Some(format!("{spin} listing this folder… {}s{reading}", t.as_secs()).into());
         }
-        let shown = self.shown();
-        if shown.iter().any(|e| e.is_file()) {
+        let any_file = self
+            .shown_at()
+            .iter()
+            .any(|&i| self.entries[i].entry.is_file());
+        if any_file {
             return None;
         }
         if !self.filter.is_empty() && self.entries.iter().any(|it| it.entry.is_file()) {
@@ -1524,7 +1721,7 @@ impl<W: Wanted> Browser<W> {
         // The layout does not depend on the styles.
         let (head, foot) = self.frame(width, &Look::terminal());
         let rows = height.saturating_sub(head.len() + foot.len()).max(3);
-        let len = self.shown().len();
+        let len = self.shown_len();
         let first = first_visible(self.row, len, rows);
         let k = line.checked_sub(head.len()).filter(|&k| k < rows)?;
         Some(first + k).filter(|&i| i < len)
@@ -1605,14 +1802,6 @@ impl<W: Wanted> Browser<W> {
         (head, foot)
     }
 }
-
-/// The first entry after `..`, if there is one.
-fn past_up<A>(shown: &[&Entry<A>]) -> usize {
-    usize::from(shown.len() > 1 && matches!(shown.first(), Some(Entry::Up)))
-}
-
-/// A listing's spinner, a frame each tenth of a second.
-const SPINNER: [char; 8] = ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'];
 
 /// `s` in at most `n` characters.
 fn fit(s: &str, n: usize) -> String {

@@ -64,8 +64,8 @@ gallery-trace = ["gallery", "dep:sha2"]
 form = ["clap"]
 # A file browser: one folder's subfolders and the files a caller wants,
 # listed on a worker thread, narrowed by what is typed, typed paths
-# followed, files marked across folders. ratatui only.
-browse = []
+# followed, files marked across folders. ratatui only; `work`'s spinner.
+browse = ["work"]
 # Work on another thread while a screen stays up: answers picked up
 # between frames, a spinner, and waits that show only slow work. ratatui only.
 work = []

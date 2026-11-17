@@ -343,6 +343,48 @@ fn a_typed_path_is_followed_a_folder_it_reaches_entered_and_one_not_there_stays(
 }
 
 #[test]
+fn a_typed_path_through_dot_dot_lists_the_folder_by_its_one_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().canonicalize().unwrap();
+    for sub in ["data", "data2"] {
+        std::fs::create_dir(d.join(sub)).unwrap();
+    }
+    let mut b = Browser::open(&d, Txt { many: false }, None);
+    type_in(&mut b, &format!("{}/data2/../", d.display()));
+    assert_eq!(b.dir, d);
+    assert_eq!(names(&b), ["..", "data", "data2"]);
+    // Completed through the `..`, as typed.
+    type_in(&mut b, "data2");
+    assert_eq!(b.dir, d.join("data2"));
+    assert!(b.completed());
+    // Up from there is up by name.
+    b.key(key(KeyCode::Esc));
+    b.go_up();
+    assert_eq!(b.dir, d);
+    assert_eq!(b.current().map(Entry::name), Some("data2"));
+}
+
+#[test]
+fn a_typed_path_into_a_folder_not_listed_yet_is_followed_once_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().canonicalize().unwrap();
+    for sub in ["data", "data2"] {
+        std::fs::create_dir(d.join(sub)).unwrap();
+    }
+    write(&d.join("data2"), "a.txt");
+    // No wait for any listing: each folder is followed as its names come.
+    let mut b = Browser::open_within(&d, Slow, None, Duration::ZERO);
+    type_in(&mut b, &format!("{}/data2", d.display()));
+    let until = Instant::now() + Duration::from_secs(30);
+    while (b.listing().is_some() || b.unsure) && Instant::now() < until {
+        b.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(b.dir, d.join("data2"));
+    assert_eq!(names(&b), ["..", "a.txt"]);
+}
+
+#[test]
 fn a_relative_start_is_made_absolute_so_up_keeps_working() {
     let mut b = Browser::open(".", Simple::keeping(Header::new("", ""), |_| false), None);
     assert!(b.dir.is_absolute(), "{}", b.dir.display());
