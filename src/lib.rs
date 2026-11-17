@@ -100,7 +100,8 @@ pub mod logs;
     feature = "save",
     feature = "gallery",
     feature = "form",
-    feature = "browse"
+    feature = "browse",
+    feature = "widgets"
 ))]
 pub mod look;
 #[cfg(feature = "style")]
@@ -109,6 +110,8 @@ pub mod map;
 pub mod save;
 #[cfg(all(feature = "testing", sessions))]
 pub mod testing;
+#[cfg(feature = "widgets")]
+pub mod widgets;
 
 #[cfg(sessions)]
 pub use dir::{runtime_dir, Listed};
