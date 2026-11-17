@@ -141,10 +141,17 @@ fn kind(picker: &Picker) -> PickerKind {
 /// changed (its protocol or cell size may be another, and kitty's images
 /// were deleted by the attach). An image that could not be made is not
 /// tried again until then either.
+///
+/// A new size is made only once a second frame finds the area that size
+/// still, so a terminal dragged to a new size is not rasterised at every
+/// frame of the drag; meanwhile the view draws its text plot, and
+/// [`PlotImage::is_stale`] says a redraw is owed.
 #[derive(Default)]
 pub struct PlotImage {
     stale: bool,
     size: Option<(u16, u16)>,
+    /// A size the area changed to, seen on the last frame and not made yet.
+    resized: Option<(u16, u16)>,
     protocol: Option<Protocol>,
     /// The attach ([`crate::attaches`]) the image was made at, and the
     /// picker's [`kind`].
@@ -157,14 +164,17 @@ impl PlotImage {
         self.stale = true;
     }
 
-    /// Whether the next frame rebuilds it, for a view that marked it.
+    /// Whether the next frame rebuilds it: the view marked it, or its
+    /// area changed size. A view whose `Screen::tick` (in `view`) is true
+    /// for it draws the image at a new size once a resize settles.
     pub fn is_stale(&self) -> bool {
-        self.stale
+        self.stale || self.resized.is_some()
     }
 
     /// Draw into `area`. `draw(width, height)` returns the SVG, in figure
     /// units, for an area that size. False when no image could be made,
-    /// so the caller can fall back to text.
+    /// or the area has just changed size, so the caller can fall back to
+    /// text.
     pub fn render(
         &mut self,
         frame: &mut Frame,
@@ -195,6 +205,13 @@ impl PlotImage {
             self.made = Some(made);
         }
         let size = (area.width, area.height);
+        if self.size == Some(size) {
+            self.resized = None;
+        } else if !self.stale && self.size.is_some() && self.resized != Some(size) {
+            // Resized: made once the next frame finds it this size still.
+            self.resized = Some(size);
+            return false;
+        }
         if self.stale || self.size != Some(size) {
             let font = picker.font_size();
             let scale = font.height.max(1) as f32 / UNITS_PER_CELL;
@@ -219,6 +236,7 @@ impl PlotImage {
             self.protocol = made.ok();
             self.size = Some(size);
             self.stale = false;
+            self.resized = None;
         }
         match &self.protocol {
             Some(p) => {

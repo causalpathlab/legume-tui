@@ -21,8 +21,7 @@
 use crate::look::Look;
 use crate::{Keyboard, Modes, Mouse, Round, Session, SessionCommand, Tool};
 use ratatui::crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    MouseEvent,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -76,8 +75,9 @@ pub trait Screen {
         false
     }
     /// Whether the terminal is asked to report keys held with Shift, Alt or
-    /// Ctrl apart (the kitty keyboard protocol; others ignore the request),
-    /// so that Shift+Enter, say, is not taken for Enter.
+    /// Ctrl apart (the kitty keyboard protocol, asked only of a terminal
+    /// that says it has it: [`Keyboard::DISAMBIGUATE`]), so that
+    /// Shift+Enter, say, is not taken for Enter.
     fn reports_chords(&self) -> bool {
         false
     }
@@ -106,7 +106,7 @@ pub fn modes_of(screen: &impl Screen) -> Modes {
             Mouse::Off
         })
         .keyboard_enhancement(if screen.reports_chords() {
-            Keyboard::On(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            Keyboard::DISAMBIGUATE
         } else {
             Keyboard::Off
         })
@@ -160,8 +160,6 @@ pub struct Tui<'s> {
     /// What it draws on, while it is up ([`Role`]).
     terminal: Option<ratatui::DefaultTerminal>,
     role: Role,
-    /// The modes the screen has on now.
-    modes: Modes,
     _held: crate::logs::Hold,
 }
 
@@ -213,7 +211,6 @@ impl<'s> Tui<'s> {
             session,
             terminal: None,
             role: Role::Down,
-            modes: Modes::new(),
             _held: crate::logs::hold(),
         }
     }
@@ -278,13 +275,12 @@ impl<'s> Tui<'s> {
             if redraw {
                 session.draw(terminal, |f| screen.render(f))?;
                 let wanted = modes_of(screen);
-                if wanted != self.modes {
+                if wanted != session.modes() {
                     session.set_modes(wanted)?;
-                    self.modes = wanted;
                 }
-            }
-            if let Some(status) = screen.status() {
-                session.status(&status);
+                if let Some(status) = screen.status() {
+                    session.status(&status);
+                }
             }
             if let Some(notice) = screen.take_notice() {
                 notify(&notice);
@@ -342,9 +338,11 @@ impl<'s> Tui<'s> {
     fn up(&mut self, modes: Modes) -> io::Result<()> {
         match self.role.rise(self.session.screen_up()) {
             Rise::Bring => {
-                (self.terminal, self.role) = (None, Role::Down);
-                self.terminal = Some(self.session.terminal_with(modes)?);
+                // The owner before it is up: should it come up only in
+                // part, the drop restores that part (and nothing if none
+                // came up, the screen not being on).
                 self.role = Role::Owner;
+                self.terminal = Some(self.session.terminal_with(modes)?);
             }
             Rise::Join => {
                 let (then, shown) = (self.session.modes(), crate::screen_shown());
@@ -361,12 +359,11 @@ impl<'s> Tui<'s> {
                 self.session.set_modes(modes)?;
             }
             Rise::Switch => {
-                if modes != self.modes {
+                if modes != self.session.modes() {
                     self.session.set_modes(modes)?;
                 }
             }
         }
-        self.modes = modes;
         Ok(())
     }
 
@@ -396,7 +393,7 @@ impl Drop for Tui<'_> {
                 if !self.session.screen_up() {
                     return;
                 }
-                if modes != self.modes {
+                if modes != self.session.modes() {
                     let _ = self.session.set_modes(modes);
                 }
                 if shown {
