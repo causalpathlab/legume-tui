@@ -282,3 +282,13 @@ fn without_sessions_every_tui_runs_plain_as_before() {
     assert!(s.run_child(&mut child).unwrap().success());
     assert!(!s.take_repaint(), "no screen was up to repaint");
 }
+
+#[test]
+fn the_run_key_is_ctrl_r_only() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let k = |c, m| KeyEvent::new(KeyCode::Char(c), m);
+    assert!(is_run_key(&k('r', KeyModifiers::CONTROL)));
+    assert!(!is_run_key(&k('r', KeyModifiers::NONE)));
+    assert!(!is_run_key(&k('s', KeyModifiers::CONTROL)));
+    assert_eq!(RUN_KEY, "ctrl+r");
+}

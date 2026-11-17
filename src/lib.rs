@@ -230,6 +230,17 @@ pub fn switch_key() -> String {
     chord::Key::switch().display()
 }
 
+/// The key that runs what a screen set up: ctrl+r, which every terminal
+/// passes on as it is.
+pub const RUN_KEY: &str = "ctrl+r";
+
+/// Whether `k` is [`RUN_KEY`].
+#[must_use]
+pub fn is_run_key(k: &ratatui::crossterm::event::KeyEvent) -> bool {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    k.code == KeyCode::Char('r') && k.modifiers.contains(KeyModifiers::CONTROL)
+}
+
 /// A session of this process offers the detach and switch keys
 /// ([`Session::offers_keys`]).
 static KEYS_OFFERED: AtomicBool = AtomicBool::new(false);
@@ -1390,6 +1401,29 @@ impl Session {
     #[cfg_attr(not(sessions), allow(dead_code))]
     pub(crate) fn heard_keyboard(&self, supported: bool) {
         *lock(&self.inner.keyboard) = Some((attaches(), supported));
+    }
+
+    /// Run `f` on the whole terminal, `modes` on, and give the terminal
+    /// back however it ends. Logging is off meanwhile (with the `logs`
+    /// feature): log lines would land over the screen. An error it ends
+    /// with is held where it is seen ([`Session::hold_error`]).
+    pub fn with_terminal<T, E>(
+        &self,
+        modes: Modes,
+        f: impl FnOnce(&mut ratatui::DefaultTerminal) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: std::fmt::Display + From<io::Error>,
+    {
+        #[cfg(feature = "logs")]
+        let _quiet = logs::quiet();
+        let mut terminal = self.terminal_with(modes)?;
+        let out = f(&mut terminal);
+        if let Err(e) = &out {
+            let _ = self.hold_error(&mut terminal, e);
+        }
+        self.restore();
+        out
     }
 
     /// Hand the terminal back (as `ratatui::restore`), its modes off; also

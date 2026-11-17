@@ -174,3 +174,25 @@ fn a_typed_path_is_absolute_from_home() {
     }
     assert!(typed_path("rel").is_absolute());
 }
+
+#[test]
+fn a_size_reads_in_its_unit_and_a_missing_file_has_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let small = tmp.path().join("small");
+    let big = tmp.path().join("big");
+    std::fs::write(&small, [0u8; 12]).unwrap();
+    std::fs::write(&big, vec![0u8; 12_300]).unwrap();
+    assert_eq!(size(&small).as_deref(), Some("12 B"));
+    assert_eq!(size(&big).as_deref(), Some("12.3 kB"));
+    assert_eq!(size(&tmp.path().join("none")), None);
+}
+
+#[test]
+fn a_path_under_the_working_folder_is_shown_relative() {
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(shown(&cwd.join("a/b.zarr")), "a/b.zarr");
+    // The folder itself and a path elsewhere stay as given.
+    assert_eq!(relative(&cwd), cwd);
+    let elsewhere = Path::new("/somewhere/else");
+    assert_eq!(relative(elsewhere), elsewhere);
+}

@@ -49,6 +49,41 @@ pub fn tilde(p: &Path) -> String {
     p.display().to_string()
 }
 
+/// `p` relative to the working directory when it is under it, else as
+/// given.
+#[must_use]
+pub fn relative(p: &Path) -> PathBuf {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| p.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        .filter(|r| !r.as_os_str().is_empty())
+        .unwrap_or_else(|| p.to_path_buf())
+}
+
+/// A path as shown: relative to the working directory when it is under
+/// it (see [`relative`]).
+#[must_use]
+pub fn shown(p: &Path) -> String {
+    relative(p).to_string_lossy().into_owned()
+}
+
+/// A file's size as a browser notes it, `12.3 MB`; none when it cannot be
+/// read.
+#[must_use]
+pub fn size(path: &Path) -> Option<String> {
+    let bytes = std::fs::metadata(path).ok()?.len() as f64;
+    let (v, unit) = [("kB", 1e3), ("MB", 1e6), ("GB", 1e9)]
+        .iter()
+        .rev()
+        .find(|(_, s)| bytes >= *s)
+        .map_or((bytes, "B"), |(u, s)| (bytes / s, *u));
+    Some(if unit == "B" {
+        format!("{v:.0} B")
+    } else {
+        format!("{v:.1} {unit}")
+    })
+}
+
 /// A path as typed into a line: `~` is home, and the rest is made absolute
 /// with `.` and `..` resolved (see [`normalize`]).
 #[must_use]
