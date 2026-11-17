@@ -109,6 +109,8 @@ pub mod map;
 pub mod save;
 #[cfg(all(feature = "testing", sessions))]
 pub mod testing;
+#[cfg(feature = "work")]
+pub mod work;
 
 #[cfg(sessions)]
 pub use dir::{runtime_dir, Listed};

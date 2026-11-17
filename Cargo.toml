@@ -65,6 +65,9 @@ form = ["clap"]
 # A file browser: one folder's subfolders and files, narrowed by what is
 # typed, with typed paths walked. ratatui only.
 browse = []
+# Work on another thread while a screen stays up: answers picked up
+# between frames, a spinner, and waits that show only slow work. ratatui only.
+work = []
 
 [dependencies]
 # `unstable-rendered-line-info`: a paragraph's wrapped row count, for popups.
