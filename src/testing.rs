@@ -52,6 +52,8 @@ pub struct Private {
     dir: tempfile::TempDir,
     exe: PathBuf,
     wait: Duration,
+    /// Whose session commands are run ([`Self::tool`]).
+    tool: crate::Tool,
 }
 
 impl Private {
@@ -64,7 +66,32 @@ impl Private {
             dir,
             exe: exe.into(),
             wait: WAIT,
+            tool: crate::Tool::new(""),
         }
+    }
+
+    /// The tool whose session commands the harness runs
+    /// ([`crate::Tool::session_command`]): `sessions` and `kill` by
+    /// default, `session list` and `session kill` under a verb.
+    pub fn tool(mut self, tool: crate::Tool) -> Self {
+        self.tool = tool;
+        self
+    }
+
+    /// The words of session command `c`, then `rest`.
+    fn session_args(&self, c: crate::SessionCommand, rest: &[&str]) -> Vec<String> {
+        let words = self.tool.session_command(c);
+        words
+            .split(' ')
+            .chain(rest.iter().copied())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// What the tool said to session command `c` with `rest`, no terminal.
+    fn run_session(&self, c: crate::SessionCommand, rest: &[&str]) -> String {
+        let args = self.session_args(c, rest);
+        self.run(&args.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
     /// Wait `wait` for what is expected, in place of [`WAIT`].
@@ -185,9 +212,11 @@ impl Private {
         self.run_all(args).1
     }
 
-    /// Wait until `<tool> sessions` says `what`; what it said.
+    /// Wait until the tool's session list (`<tool> sessions`, or under its
+    /// verb) says `what`; what it said.
     pub fn wait_listed(&self, what: &str) -> String {
-        self.wait_said(&["sessions"], what)
+        let args = self.session_args(crate::SessionCommand::List, &[]);
+        self.wait_said(&args.iter().map(String::as_str).collect::<Vec<_>>(), what)
     }
 
     /// Wait until the tool run with `args` says `what`; what it said.
@@ -206,9 +235,10 @@ impl Private {
         }
     }
 
-    /// The program's pid, from `<tool> sessions` (the first one listed).
+    /// The program's pid, from the tool's session list (the first one
+    /// listed).
     pub fn program_pid(&self) -> u32 {
-        let listed = self.run(&["sessions"]);
+        let listed = self.run_session(crate::SessionCommand::List, &[]);
         listed
             .split_whitespace()
             .skip_while(|w| *w != "pid")
@@ -249,7 +279,7 @@ impl Private {
 impl Drop for Private {
     fn drop(&mut self) {
         for id in self.sockets() {
-            self.run(&["kill", &id, "--force"]);
+            self.run_session(crate::SessionCommand::Kill, &[&id, "--force"]);
         }
     }
 }

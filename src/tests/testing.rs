@@ -81,3 +81,23 @@ fn the_tool_runs_without_the_test_runners_backtrace_setting() {
         );
     }
 }
+
+#[test]
+fn the_harness_runs_the_session_commands_of_its_tool() {
+    use crate::{SessionCommand, Tool};
+    let plain = Private::new("tool");
+    assert_eq!(plain.session_args(SessionCommand::List, &[]), ["sessions"]);
+    assert_eq!(
+        plain.session_args(SessionCommand::Kill, &["tool-1", "--force"]),
+        ["kill", "tool-1", "--force"]
+    );
+    let verb = Private::new("tool").tool(Tool::new("tool").with_session_verb("session"));
+    assert_eq!(
+        verb.session_args(SessionCommand::List, &[]),
+        ["session", "list"]
+    );
+    assert_eq!(
+        verb.session_args(SessionCommand::Kill, &["tool-1", "--force"]),
+        ["session", "kill", "tool-1", "--force"]
+    );
+}

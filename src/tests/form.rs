@@ -17,7 +17,15 @@ struct Args {
     data: Vec<String>,
     #[arg(short, long, required = true)]
     output: String,
-    #[arg(long, default_value_t = 10, help = "Projection dimension")]
+    #[arg(
+        long,
+        default_value_t = 10,
+        help = "Projection dimension",
+        long_help = "Projection dimension, before the embedding.",
+        visible_alias = "pd",
+        alias = "dim",
+        value_name = "DIM"
+    )]
     proj_dim: usize,
     #[arg(long, value_delimiter = ',', help = "Topic files")]
     topics: Option<Vec<String>>,
@@ -71,6 +79,24 @@ fn every_long_flag_is_a_row_of_its_kind() {
     assert!(f.get("secret").unwrap().advanced);
     assert_eq!(f.get("topics").unwrap().many, Many::Joined(','));
     assert!(!f.get("proj-dim").unwrap().required);
+}
+
+#[test]
+fn a_row_keeps_its_help_value_name_and_aliases() {
+    let mut f = form();
+    let p = f.get("proj-dim").unwrap();
+    assert_eq!(p.help, "Projection dimension");
+    assert_eq!(p.long_help, "Projection dimension, before the embedding.");
+    assert_eq!(p.value_name, "DIM");
+    assert_eq!(p.aliases, ["pd", "dim"]);
+    // Found by any of its names, visible or hidden.
+    for name in ["pd", "dim"] {
+        assert_eq!(f.get(name).unwrap().long, "proj-dim", "{name}");
+    }
+    f.get_mut("dim").unwrap().value = "20".into();
+    assert_eq!(f.argv(), ["--proj-dim", "20"]);
+    let b = f.get("backend").unwrap();
+    assert!(b.help.is_empty() && b.aliases.is_empty());
 }
 
 #[test]
