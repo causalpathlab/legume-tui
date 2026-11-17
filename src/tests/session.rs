@@ -288,7 +288,10 @@ fn the_run_key_is_ctrl_r_only() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let k = |c, m| KeyEvent::new(KeyCode::Char(c), m);
     assert!(is_run_key(&k('r', KeyModifiers::CONTROL)));
-    assert!(is_run_key(&k('R', KeyModifiers::CONTROL | KeyModifiers::SHIFT)));
+    assert!(is_run_key(&k(
+        'R',
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT
+    )));
     assert!(!is_run_key(&k('R', KeyModifiers::SHIFT)));
     assert!(!is_run_key(&k('r', KeyModifiers::NONE)));
     assert!(!is_run_key(&k('s', KeyModifiers::CONTROL)));
