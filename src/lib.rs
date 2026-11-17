@@ -234,11 +234,12 @@ pub fn switch_key() -> String {
 /// passes on as it is.
 pub const RUN_KEY: &str = "ctrl+r";
 
-/// Whether `k` is [`RUN_KEY`].
+/// Whether `k` is [`RUN_KEY`]: ctrl+r, with shift too, which many
+/// terminals send as `R`.
 #[must_use]
 pub fn is_run_key(k: &ratatui::crossterm::event::KeyEvent) -> bool {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-    k.code == KeyCode::Char('r') && k.modifiers.contains(KeyModifiers::CONTROL)
+    matches!(k.code, KeyCode::Char('r' | 'R')) && k.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// A session of this process offers the detach and switch keys
