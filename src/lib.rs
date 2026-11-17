@@ -94,13 +94,19 @@ pub mod form;
 pub mod gallery;
 #[cfg(feature = "graphics")]
 pub mod graphics;
+#[cfg(feature = "hist")]
+pub mod hist;
+#[cfg(any(feature = "view", feature = "hist"))]
+mod ink;
 #[cfg(feature = "logs")]
 pub mod logs;
 #[cfg(any(
     feature = "save",
     feature = "gallery",
     feature = "form",
-    feature = "browse"
+    feature = "browse",
+    feature = "view",
+    feature = "hist"
 ))]
 pub mod look;
 #[cfg(feature = "style")]
@@ -109,6 +115,8 @@ pub mod map;
 pub mod save;
 #[cfg(all(feature = "testing", sessions))]
 pub mod testing;
+#[cfg(feature = "view")]
+pub mod view;
 
 #[cfg(sessions)]
 pub use dir::{runtime_dir, Listed};
