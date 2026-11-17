@@ -77,7 +77,7 @@ widgets = []
 # in a session, several views on one screen with the tool's work between
 # them, a stop taken as the view's quit, the session keys on the title row,
 # and the chrome (header, panel, help and input lines).
-view = ["logs"]
+view = ["logs", "widgets"]
 # Histograms in text: scales, bins, the axis values sit on, and bar plots
 # into a ratatui buffer. ratatui only, apart from `chart`, whose map
 # rendering they need none of.

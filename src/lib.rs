@@ -96,7 +96,7 @@ pub mod gallery;
 pub mod graphics;
 #[cfg(feature = "hist")]
 pub mod hist;
-#[cfg(any(feature = "view", feature = "hist"))]
+#[cfg(any(feature = "widgets", feature = "hist"))]
 mod ink;
 pub mod keys;
 #[cfg(feature = "logs")]
@@ -1368,6 +1368,12 @@ impl Session {
         // a stop before the first poll wakes that poll.
         let _ = event::poll(Duration::ZERO);
         Ok(t)
+    }
+
+    /// The modes the screen has on, or will as it comes up.
+    #[cfg(feature = "view")]
+    pub(crate) fn modes(&self) -> Modes {
+        *lock(&self.inner.modes)
     }
 
     /// Change the modes the screen has on.

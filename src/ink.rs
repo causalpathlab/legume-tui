@@ -1,4 +1,4 @@
-//! The styles the screen loop's chrome and the histograms draw in beyond
+//! The styles the screen loop's chrome, the widgets and the histograms draw in beyond
 //! a [`Look`]'s own: the accent, and the accent in bold for keys and the
 //! value in focus.
 

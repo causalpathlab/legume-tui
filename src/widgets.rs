@@ -231,13 +231,15 @@ pub fn tab_bar<T: Clone>(
     Line::from(spans)
 }
 
-/// Keys and what they do as a hint line: each key in bold, what it does as
-/// a hint.
+/// Keys and what they do as a hint line: each key in the accent in bold
+/// (as the screen loop's chrome draws keys, typed values and the value in
+/// focus), what it does as a hint. [`crate::view::help_line`] is this.
 #[must_use]
 pub fn key_line<K: AsRef<str>, W: AsRef<str>>(keys: &[(K, W)], look: &Look) -> Line<'static> {
+    let key_style = crate::ink::highlight(look);
     let mut spans = vec![Span::raw(" ")];
     for (key, what) in keys {
-        spans.push(Span::styled(key.as_ref().to_string(), look.bold));
+        spans.push(Span::styled(key.as_ref().to_string(), key_style));
         spans.push(Span::styled(format!(" {}  ", what.as_ref()), look.hint));
     }
     Line::from(spans)
@@ -448,7 +450,7 @@ impl<A> Menu<A> {
             over
         };
         let inner = usize::from(width.saturating_sub(2).max(1));
-        let mut lines: Vec<Line> = wrap(&self.question, inner, 6)
+        let mut lines: Vec<Line> = crate::text::wrap_at_most(&self.question, inner, 6)
             .into_iter()
             .map(|l| Line::styled(l, look.bold))
             .collect();
@@ -458,7 +460,7 @@ impl<A> Menu<A> {
         let detail: Vec<String> = self.choices.get(self.sel).map_or_else(Vec::new, |o| {
             o.detail
                 .lines()
-                .flat_map(|p| wrap(p, inner, 4))
+                .flat_map(|p| crate::text::wrap_at_most(p, inner, 4))
                 .take(12)
                 .collect()
         });
@@ -515,35 +517,6 @@ pub fn numbered_but<A>(items: Vec<(String, String, A)>, taken: &str) -> Vec<Choi
             action,
         })
         .collect()
-}
-
-/// `text` wrapped between words into lines of at most `width` characters,
-/// at most `max` of them, the last cut with `…` when there is more; one
-/// empty line for no words, none for no rows.
-fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
-    if max == 0 {
-        return Vec::new();
-    }
-    let mut lines: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        match lines.last_mut() {
-            Some(l) if l.chars().count() + 1 + word.chars().count() <= width => {
-                l.push(' ');
-                l.push_str(word);
-            }
-            _ => lines.push(word.chars().take(width).collect()),
-        }
-    }
-    if lines.len() > max {
-        lines.truncate(max);
-        let last = &mut lines[max - 1];
-        let keep: String = last.chars().take(width.saturating_sub(1)).collect();
-        *last = format!("{keep}…");
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
 }
 
 #[cfg(test)]

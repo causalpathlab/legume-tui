@@ -54,6 +54,8 @@ fn capped_lines_end_in_an_ellipsis() {
     assert_eq!(wrap_at_most("toolongword", 4, 3), ["tool"]);
     assert_eq!(wrap_at_most("", 4, 3), [""]);
     assert!(wrap_at_most("a", 4, 0).is_empty());
+    assert_eq!(wrap_at_most("one two three", 7, 3), ["one two", "three"]);
+    assert_eq!(wrap_at_most("aa bb cc dd ee", 5, 2), ["aa bb", "cc d…"]);
 }
 
 #[test]
