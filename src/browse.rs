@@ -1507,6 +1507,37 @@ impl<W: Wanted> Browser<W> {
     /// under the cursor is shown whole above the footer.
     #[must_use]
     pub fn lines(&self, height: usize, width: usize, look: &Look) -> Vec<Line<'static>> {
+        let (head, foot) = self.frame(width, look);
+        let rows = height.saturating_sub(head.len() + foot.len()).max(3);
+        let mut out = head;
+        out.extend(self.rows(rows, width, look));
+        out.extend(foot);
+        out
+    }
+
+    /// The entry (an index into [`Self::shown`]) drawn on line `line` of
+    /// [`Self::lines`]`(height, width, ..)`, for a click; none on the
+    /// header, the footer or past the last entry. Where
+    /// [`Self::has_mark_column`], columns 2 and 3 of a row are its mark.
+    #[must_use]
+    pub fn row_at(&self, height: usize, width: usize, line: usize) -> Option<usize> {
+        // The layout does not depend on the styles.
+        let (head, foot) = self.frame(width, &Look::terminal());
+        let rows = height.saturating_sub(head.len() + foot.len()).max(3);
+        let len = self.shown().len();
+        let first = first_visible(self.row, len, rows);
+        let k = line.checked_sub(head.len()).filter(|&k| k < rows)?;
+        Some(first + k).filter(|&i| i < len)
+    }
+
+    /// Whether rows have a mark column (`●`, `★`) after the cursor's `▸`.
+    #[must_use]
+    pub fn has_mark_column(&self) -> bool {
+        self.mark_column(&self.want.header())
+    }
+
+    /// [`Self::lines`]' header and footer, `width` wide.
+    fn frame(&self, width: usize, look: &Look) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
         let h = self.want.header();
         let line = |s: &str, style: Style| Line::from(Span::styled(fit(s, width), style));
         let mut head = vec![line(&format!(" {}", h.title), look.bold)];
@@ -1571,12 +1602,7 @@ impl<W: Wanted> Browser<W> {
             " type to narrow  / a path  ~ home  esc cancel",
             look.hint,
         ));
-
-        let rows = height.saturating_sub(head.len() + foot.len()).max(3);
-        let mut out = head;
-        out.extend(self.rows(rows, width, look));
-        out.extend(foot);
-        out
+        (head, foot)
     }
 }
 

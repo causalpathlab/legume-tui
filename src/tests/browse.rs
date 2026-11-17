@@ -481,6 +481,32 @@ fn a_simple_browser_keeps_files_by_name_and_notes_them() {
 }
 
 #[test]
+fn a_click_on_a_line_finds_the_row_drawn_there() {
+    let tmp = tree();
+    let root = normalize(tmp.path());
+    let b = simple(&root);
+    let (h, w) = (20, 40);
+    let lines = text(&b.lines(h, w, &Look::terminal()));
+    let shown = names(&b);
+    for (k, l) in lines.iter().enumerate() {
+        match b.row_at(h, w, k) {
+            // The row found is the one drawn on that line.
+            Some(i) => assert!(l.contains(shown[i].as_str()), "{k}: {l:?}"),
+            None => assert!(
+                !shown
+                    .iter()
+                    .any(|n| l.starts_with(&format!("▸ {n}")) || l.starts_with(&format!("  {n}"))),
+                "{k}: {l:?}"
+            ),
+        }
+    }
+    let found: Vec<usize> = (0..h).filter_map(|k| b.row_at(h, w, k)).collect();
+    assert_eq!(found, (0..shown.len()).collect::<Vec<_>>());
+    assert_eq!(b.row_at(h, w, h + 5), None);
+    assert!(!b.has_mark_column());
+}
+
+#[test]
 fn a_simple_browser_marks_when_asked() {
     let tmp = tree();
     let root = normalize(tmp.path());
