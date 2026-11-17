@@ -3,29 +3,40 @@
 //!
 //! senna's `wrap_keys`, `wrap_words` and `key_lines` (`src/tui/mod.rs`),
 //! faba's `wrap_help` (`src/tui.rs`), and lupin's capped `wrap` and
-//! `cut_words` (`src/tui/ui.rs`). Names cut by characters are
-//! `chrome::short`, `middle` and `tail`; help text wrapped around quoted
+//! `cut_words` (`src/tui/ui.rs`); pinto's names cut by characters,
+//! [`short`], [`middle`], [`tail`] and [`wrap`], senna's [`wrapped_rows`],
+//! and faba's text progress [`bar`]. Help text wrapped around quoted
 //! commands is `cli::wrap`.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Wrap};
 
 /// Key hints `text`, its entries three spaces apart, broken into lines of
 /// at most `width` (less one) columns between entries, so a narrow
 /// terminal cuts none in half.
 #[must_use]
 pub fn wrap_keys(text: &str, width: usize) -> Vec<String> {
-    let room = width.saturating_sub(1);
+    let entries = text.split("   ").filter(|e| !e.is_empty());
+    wrap_on(entries, "   ", width.saturating_sub(1))
+}
+
+/// `words` joined by `sep` into lines of at most `width` columns, greedily:
+/// a word goes on the line before it unless that would make it too wide;
+/// a word longer than a line has a line of its own. One empty line for no
+/// words.
+fn wrap_on<'a>(words: impl IntoIterator<Item = &'a str>, sep: &str, width: usize) -> Vec<String> {
+    let sep_w = sep.chars().count();
     let mut lines = vec![String::new()];
-    for entry in text.split("   ").filter(|e| !e.is_empty()) {
+    for word in words {
         let line = lines.last_mut().expect("a line");
-        if !line.is_empty() && line.chars().count() + 3 + entry.chars().count() > room {
-            lines.push(entry.to_string());
+        if !line.is_empty() && line.chars().count() + sep_w + word.chars().count() > width {
+            lines.push(word.to_string());
         } else {
             if !line.is_empty() {
-                line.push_str("   ");
+                line.push_str(sep);
             }
-            line.push_str(entry);
+            line.push_str(word);
         }
     }
     lines
@@ -35,19 +46,7 @@ pub fn wrap_keys(text: &str, width: usize) -> Vec<String> {
 /// `width` columns; a word longer than that has a line of its own.
 #[must_use]
 pub fn wrap_words(text: &str, width: usize) -> Vec<String> {
-    let mut lines = vec![String::new()];
-    for word in text.split(' ') {
-        let line = lines.last_mut().expect("a line");
-        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width.max(1) {
-            lines.push(word.to_string());
-        } else {
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(word);
-        }
-    }
-    lines
+    wrap_on(text.split(' '), " ", width.max(1))
 }
 
 /// A key and what it does, as lines of at most `width` columns: the key in
@@ -113,24 +112,15 @@ pub fn wrap_at_most(text: &str, width: usize, max: usize) -> Vec<String> {
     if max == 0 {
         return Vec::new();
     }
-    let mut lines: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        match lines.last_mut() {
-            Some(l) if l.chars().count() + 1 + word.chars().count() <= width => {
-                l.push(' ');
-                l.push_str(word);
-            }
-            _ => lines.push(word.chars().take(width).collect()),
-        }
-    }
+    let mut lines: Vec<String> = wrap_on(text.split_whitespace(), " ", width)
+        .into_iter()
+        .map(|l| l.chars().take(width).collect())
+        .collect();
     if lines.len() > max {
         lines.truncate(max);
         let last = &mut lines[max - 1];
         let keep: String = last.chars().take(width.saturating_sub(1)).collect();
         *last = format!("{keep}…");
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
     }
     lines
 }
@@ -158,6 +148,90 @@ pub fn cut_words(text: &str, width: usize) -> String {
         kept = text.chars().take(width.saturating_sub(1)).collect();
     }
     format!("{kept}…")
+}
+
+/// How many rows `text` takes wrapped at word boundaries to `width`
+/// columns, as a wrapping paragraph lays it out; a word longer than a row
+/// is broken across rows of its own.
+#[must_use]
+pub fn wrapped_rows(text: &str, width: usize) -> usize {
+    // ratatui's own count, so a leading space and wide characters take
+    // the columns the paragraph gives them.
+    Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .line_count(u16::try_from(width.max(1)).unwrap_or(u16::MAX))
+        .max(1)
+}
+
+/// `s` in at most `n` characters, `…` marking a cut at the end.
+#[must_use]
+pub fn short(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// `s` in at most `n` characters, `…` marking a cut in the middle: the
+/// start and the end kept, so names sharing a prefix still differ.
+#[must_use]
+pub fn middle(s: &str, n: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= n {
+        return s.to_string();
+    }
+    let end = n.saturating_sub(1) / 2;
+    let start = n.saturating_sub(1) - end;
+    let mut out: String = chars[..start].iter().collect();
+    out.push('…');
+    out.extend(&chars[chars.len() - end..]);
+    out
+}
+
+/// The last `n` characters of `s`, `…` marking a cut at the start.
+#[must_use]
+pub fn tail(s: &str, n: usize) -> String {
+    let len = s.chars().count();
+    if len <= n {
+        s.to_string()
+    } else {
+        let mut out = String::from("…");
+        out.extend(s.chars().skip(len + 1 - n.max(1)));
+        out
+    }
+}
+
+/// `s` in pieces of at most `first` characters, then `rest` for each
+/// piece after the first; none for an empty `s`.
+#[must_use]
+pub fn wrap(s: &str, first: usize, rest: usize) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let (head, tail) = chars.split_at(first.max(1).min(chars.len()));
+    std::iter::once(head)
+        .filter(|h| !h.is_empty())
+        .chain(tail.chunks(rest.max(1)))
+        .map(|c| c.iter().collect())
+        .collect()
+}
+
+/// How many of `width` cells a bar shows filled for `done` of `total`:
+/// whole cells, so a bar is full only when it is done.
+#[must_use]
+pub fn filled(done: u64, total: u64, width: usize) -> usize {
+    match total {
+        0 => 0,
+        _ => (width as u128 * u128::from(done.min(total)) / u128::from(total)) as usize,
+    }
+}
+
+/// A `width`-cell bar for `done` of `total` as text: `█` filled, `░` not.
+#[must_use]
+pub fn bar(done: u64, total: u64, width: usize) -> String {
+    let full = filled(done, total, width);
+    format!("{}{}", "█".repeat(full), "░".repeat(width - full))
 }
 
 #[cfg(test)]

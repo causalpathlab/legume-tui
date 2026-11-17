@@ -233,7 +233,7 @@ fn a_key_line_lights_the_keys_in_the_accent_in_bold() {
     let keys: Vec<_> = line
         .spans
         .iter()
-        .filter(|s| s.style == crate::ink::highlight(&look))
+        .filter(|s| s.style == look.highlight())
         .map(|s| s.content.to_string())
         .collect();
     assert_eq!(keys, ["q", "s"]);

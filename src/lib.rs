@@ -96,20 +96,9 @@ pub mod gallery;
 pub mod graphics;
 #[cfg(feature = "hist")]
 pub mod hist;
-#[cfg(any(feature = "widgets", feature = "hist"))]
-mod ink;
 pub mod keys;
 #[cfg(feature = "logs")]
 pub mod logs;
-#[cfg(any(
-    feature = "save",
-    feature = "gallery",
-    feature = "form",
-    feature = "browse",
-    feature = "widgets",
-    feature = "view",
-    feature = "hist"
-))]
 pub mod look;
 #[cfg(feature = "style")]
 pub mod map;
@@ -127,6 +116,7 @@ pub mod work;
 
 #[cfg(sessions)]
 pub use dir::{runtime_dir, Listed};
+pub use look::Look;
 pub use mode::{hosts_by_default, Bypass};
 pub use screen::{Keyboard, Modes, Mouse};
 #[cfg(sessions)]

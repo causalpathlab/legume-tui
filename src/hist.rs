@@ -11,7 +11,6 @@ mod axis;
 
 pub use axis::Axis;
 
-use crate::ink;
 use crate::look::Look;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -368,7 +367,7 @@ impl<T: BarValue> HistPlot<'_, T> {
     /// the x axis and its labels; the left [`GUTTER`] columns hold the y axis.
     pub fn render(&self, buf: &mut Buffer, area: Rect) {
         let look = &self.look;
-        let (dim, accented, highlight) = (look.hint, ink::accent(look), ink::highlight(look));
+        let (dim, accented, highlight) = (look.hint, look.accent, look.highlight());
         let [plot, axis, labels] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(1),
@@ -566,7 +565,7 @@ impl<T: BarValue> MirrorPlot<'_, T> {
     /// y axis.
     pub fn render(&self, buf: &mut Buffer, area: Rect) {
         let look = &self.look;
-        let (dim, accented, highlight) = (look.hint, ink::accent(look), ink::highlight(look));
+        let (dim, accented, highlight) = (look.hint, look.accent, look.highlight());
         let [plot, axis, labels] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(1),

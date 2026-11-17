@@ -24,7 +24,7 @@ graphics = ["dep:ratatui-image"]
 logs = ["dep:log"]
 # A stoppable runner of child processes that follows their logs and
 # progress bars (Unix).
-child = ["dep:unicode-width", "widgets"]
+child = ["dep:unicode-width"]
 # A harness that drives a tool's TUI through pseudo-terminals, for its tests:
 # canned terminal answers and a model of the visible screen.
 testing = ["dep:tempfile", "dep:vt100"]

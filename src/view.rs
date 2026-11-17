@@ -18,7 +18,6 @@
 //! Ported from data-beans (`src/interactive/ui.rs`) and faba
 //! (`src/tui.rs`).
 
-use crate::ink;
 use crate::look::Look;
 use crate::{Keyboard, Modes, Mouse, Round, Session, SessionCommand, Tool};
 use ratatui::crossterm::event::{
@@ -483,7 +482,7 @@ pub fn header(badge: &str, title: &str, extra: &str, look: &Look) -> Line<'stati
     Line::from(vec![
         Span::styled(
             format!(" {badge} "),
-            ink::highlight(look).add_modifier(Modifier::REVERSED),
+            look.highlight().add_modifier(Modifier::REVERSED),
         ),
         Span::styled(format!(" {title}"), look.page),
         Span::styled(format!("   {extra}"), look.hint),
@@ -519,7 +518,7 @@ pub fn panel(title: String, focused: bool, look: &Look) -> Block<'static> {
         .border_type(BorderType::Rounded)
         .border_style(if focused { look.page } else { look.border })
         // Titles inherit the border style; start clear of it.
-        .title(Line::from(title).style(Style::reset().patch(ink::highlight(look))))
+        .title(Line::from(title).style(Style::reset().patch(look.highlight())))
 }
 
 /// Help line from `(key, what it does)` pairs: each key in the accent in
@@ -532,7 +531,7 @@ pub fn help_line(pairs: &[(&str, &str)], look: &Look) -> Line<'static> {
 pub fn input_line(prompt: &str, text: &str, keys: &[(&str, &str)], look: &Look) -> Line<'static> {
     let mut spans = vec![
         Span::styled(format!(" {prompt}"), look.page),
-        Span::styled(format!("{text}▏"), ink::highlight(look)),
+        Span::styled(format!("{text}▏"), look.highlight()),
         Span::raw("  "),
     ];
     spans.extend(help_line(keys, look).spans);
