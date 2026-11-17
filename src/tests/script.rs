@@ -103,7 +103,7 @@ fn senna_s_script_is_made_with_out_as_a_variable_run_from_where_out_is_relative_
     let out = "runs/r";
     let name = format!("{out}.cmd.sh");
     let script = Script::new("senna", "0.9.1", "senna run", &name)
-        .up(depth(out))
+        .up(depth(out).unwrap())
         .env(&[("RUST_LOG", "info")])
         .head(1)
         .out(out)
@@ -126,9 +126,46 @@ fn senna_s_script_is_made_with_out_as_a_variable_run_from_where_out_is_relative_
         "--out \"$out\"",
         "the preview names the prefix as the script does"
     );
-    assert_eq!(depth("r"), 0);
-    assert_eq!(depth("/abs/r"), 0);
-    assert_eq!(depth("a/b/r"), 2);
+}
+
+#[test]
+fn depth_counts_the_folders_an_output_is_down_from_the_start() {
+    assert_eq!(depth("r"), Some(0));
+    assert_eq!(depth("./r"), Some(0), "`.` is no folder");
+    assert_eq!(depth("/abs/r"), Some(0));
+    assert_eq!(depth("a/b/r"), Some(2));
+    assert_eq!(depth("./a/r"), Some(1));
+    assert_eq!(depth("a/../b/r"), Some(1));
+    assert_eq!(depth("../r"), None, "above the start: no climb reaches it");
+    assert_eq!(depth("a/../../r"), None);
+    let script = |out| {
+        text(
+            &Script::new("t", "1", "t", "s").up(depth(out).unwrap()),
+            &[],
+        )
+    };
+    assert!(script("./r").contains("cd \"$(dirname \"$0\")\"\n"));
+    assert!(script("./a/r").contains("cd \"$(dirname \"$0\")\"/..\n"));
+}
+
+#[test]
+fn only_the_output_prefix_is_written_as_out_in_either_flag_form() {
+    let script = Script::new("t", "1", "t", "s").out("runs/r");
+    let lines = |ws: &[&str]| script.command_lines(&words(ws))[1..].to_vec();
+    assert_eq!(lines(&["--out", "runs/r"]), ["--out \"$out\""]);
+    assert_eq!(lines(&["--out=runs/r"]), ["--out=\"$out\""]);
+    assert_eq!(lines(&["--out", "elsewhere"]), ["--out elsewhere"]);
+    assert_eq!(lines(&["--out=elsewhere"]), ["--out=elsewhere"]);
+    assert_eq!(
+        lines(&["--in", "runs/r"]),
+        ["--in runs/r"],
+        "the prefix under another flag stays literal"
+    );
+    assert_eq!(
+        Script::new("t", "1", "t", "s").command_lines(&words(&["--out", "runs/r"]))[1],
+        "--out runs/r",
+        "no prefix set: nothing is replaced"
+    );
 }
 
 #[cfg(unix)]

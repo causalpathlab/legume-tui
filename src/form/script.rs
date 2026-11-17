@@ -10,7 +10,7 @@
 //! guard on `${out}.<result>`.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path};
 
 /// `word` as one shell word: as it is when nothing in it is special, else
 /// in single quotes.
@@ -68,8 +68,10 @@ pub fn command_lines(program: &str, argv: &[String], head: usize) -> Vec<String>
     lay_out(program, argv, head, None)
 }
 
-/// [`command_lines`], the value after `out_flag` written as `"$out"`.
-fn lay_out(program: &str, argv: &[String], head: usize, out_flag: Option<&str>) -> Vec<String> {
+/// [`command_lines`], the output prefix written as `"$out"` where it is
+/// the value of its flag: `(flag, prefix)` as two words (`--out "$out"`) or
+/// as one (`--out="$out"`). Any other value of the flag stays as it is.
+fn lay_out(program: &str, argv: &[String], head: usize, out: Option<(&str, &str)>) -> Vec<String> {
     let mut lines = vec![program.to_string()];
     // A flag has started a line: the words that follow, up to the next
     // flag, are its values.
@@ -77,8 +79,13 @@ fn lay_out(program: &str, argv: &[String], head: usize, out_flag: Option<&str>) 
     for (k, w) in argv.iter().enumerate() {
         let flag = is_flag(w);
         let add_to_last = k < head || (!flag && in_flag);
-        let word = match out_flag {
-            Some(o) if k > 0 && argv[k - 1] == o => "\"$out\"".to_string(),
+        let word = match out {
+            Some((flag, prefix)) if k > 0 && argv[k - 1] == flag && w == prefix => {
+                "\"$out\"".to_string()
+            }
+            Some((flag, prefix)) if w.strip_prefix(flag) == Some(&format!("={prefix}")) => {
+                format!("{flag}=\"$out\"")
+            }
             _ => quote(w),
         };
         match lines.last_mut() {
@@ -95,15 +102,26 @@ fn lay_out(program: &str, argv: &[String], head: usize, out_flag: Option<&str>) 
     lines
 }
 
-/// How many folders a relative output prefix goes down (`runs/r`: 1): how
-/// far a script written beside its outputs ([`Script::up`]) climbs to
-/// where the run started.
+/// How many folders a relative output prefix goes down (`runs/r` and
+/// `./runs/r`: 1; `r`, `./r` and an absolute prefix: 0): how far a script
+/// written beside its outputs ([`Script::up`]) climbs to where the run
+/// started. `.` is no folder and `..` climbs back one, by the words alone.
+///
+/// `None` when the prefix climbs above where the run started (`../r`): the
+/// script, beside it, could only get back down by the start folder's name,
+/// which the prefix does not say. Write such a prefix absolute, or leave
+/// the script to run from where it is started.
 #[must_use]
-pub fn depth(out: &str) -> usize {
-    Some(Path::new(out))
-        .filter(|o| o.is_relative())
-        .and_then(Path::parent)
-        .map_or(0, |p| p.components().count())
+pub fn depth(out: &str) -> Option<usize> {
+    let out = Path::new(out);
+    let Some(parent) = out.parent().filter(|_| out.is_relative()) else {
+        return Some(0);
+    };
+    parent.components().try_fold(0usize, |down, c| match c {
+        Component::Normal(_) => Some(down + 1),
+        Component::ParentDir => down.checked_sub(1),
+        _ => Some(down),
+    })
 }
 
 /// How a script is made: [`Script::new`], then what it adds.
@@ -129,8 +147,9 @@ pub struct Script<'a> {
     pub env: &'a [(&'a str, &'a str)],
     /// How many words of the command go on the program's line.
     pub head: usize,
-    /// The output prefix, set as `out=...` and written `"$out"` as the
-    /// value of [`out_flag`](Self::out_flag).
+    /// The output prefix, set as `out=...` and written `"$out"` where it
+    /// is the value of [`out_flag`](Self::out_flag) (`--out r` or
+    /// `--out=r`).
     pub out: Option<&'a str>,
     /// The flag whose value is the output prefix: `--out`.
     pub out_flag: &'a str,
@@ -178,7 +197,8 @@ impl<'a> Script<'a> {
     }
 
     /// Runs from `levels` folders above its own: from where the run
-    /// started, for a script beside an output `levels` deep ([`depth`]).
+    /// started, for a script beside an output `levels` deep ([`depth`],
+    /// which is `None` for an output above that folder: no `up` reaches it).
     #[must_use]
     pub const fn up(self, levels: usize) -> Self {
         Self {
@@ -232,8 +252,8 @@ impl<'a> Script<'a> {
     /// word, then [`command_lines`]' layout, the output prefix `"$out"`.
     #[must_use]
     pub fn command_lines(&self, argv: &[String]) -> Vec<String> {
-        let out_flag = self.out.map(|_| self.out_flag);
-        lay_out(&program_word(self.program), argv, self.head, out_flag)
+        let out = self.out.map(|prefix| (self.out_flag, prefix));
+        lay_out(&program_word(self.program), argv, self.head, out)
     }
 }
 

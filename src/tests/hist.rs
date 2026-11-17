@@ -297,3 +297,91 @@ fn medians_of_odd_even_and_empty() {
     assert_eq!(median(&[1.0, 2.0, 9.0]), 2.0);
     assert_eq!(median(&[1.0, 2.0, 4.0, 9.0]), 3.0);
 }
+
+#[test]
+fn negative_data_gets_bins_sized_to_its_range() {
+    for scale in [Scale::Log, Scale::Sqrt, Scale::Linear] {
+        for vals in [
+            &[-1e6f32, 1.0][..],
+            &[-999_999.5, 1.0],
+            &[-0.5, 0.0],
+            &[-0.5, -0.25],
+            &[-3.0, 2.0],
+            &[0.0],
+            &[0.0, 0.0],
+        ] {
+            let binned = Binned::new(vals, scale);
+            let n = binned.counts.len();
+            assert!(
+                (1..=MAX_BINS as usize).contains(&n),
+                "{scale:?} {vals:?}: {n}"
+            );
+            assert_eq!(binned.counts.iter().sum::<usize>(), vals.len());
+        }
+    }
+    let wide = Binned::new(&[-1e6, 1.0], Scale::Linear);
+    assert!(wide.counts.len() <= 52, "{}", wide.counts.len());
+    let small = Binned::new(&[-0.5, 0.0], Scale::Linear);
+    assert!(
+        (40..=52).contains(&small.counts.len()),
+        "{}",
+        small.counts.len()
+    );
+}
+
+#[test]
+fn non_negative_data_bins_as_from_zero() {
+    for scale in [Scale::Log, Scale::Sqrt, Scale::Linear] {
+        let binned = Binned::new(&[0.5f32, 3.2, 18.0], scale);
+        let shift = Axis::fit(&[0.5, 3.2, 18.0], true).shift;
+        let mut from_zero = Binning::new(scale, 18.0, false);
+        from_zero.shift = shift;
+        let want = from_zero.t(18.0) / TARGET_BINS;
+        assert_eq!(binned.bins.width, want, "{scale:?}");
+    }
+}
+
+#[test]
+fn a_subset_on_other_bins_draws_without_panicking() {
+    let draw_hist = |counts: &[usize], subset: &[usize]| {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        HistPlot {
+            bins: Binning::with_width(Scale::Linear, 1.0),
+            kmin: 0,
+            counts,
+            style: &|_| Style::new(),
+            subset: Some(subset),
+            y_scale: Scale::Linear,
+            y_max: None,
+            pointer: None,
+            marks: Vec::new(),
+            x_label: None,
+            tick_every: None,
+            look: Look::default(),
+        }
+        .render(&mut buf, area);
+    };
+    draw_hist(&[3, 1], &[1, 2, 4, 5]);
+    draw_hist(&[3, 1, 2], &[1]);
+
+    let (counts, subset) = ([2.0, 1.0], [1.0, 2.0, 3.0]);
+    let side = || MirrorSide {
+        counts: &counts,
+        subset: Some(&subset),
+        style: Style::new(),
+        name: "",
+    };
+    let plot = MirrorPlot {
+        up: side(),
+        down: side(),
+        y_scale: Scale::Linear,
+        y_max: None,
+        y_labels: None,
+        pointer: None,
+        x_label: None,
+        look: Look::default(),
+    };
+    let rows = draw_mirror(&plot, 12, 9);
+    assert!(rows[3].contains('─'), "{rows:?}");
+}
