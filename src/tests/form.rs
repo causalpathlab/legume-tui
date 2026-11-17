@@ -27,7 +27,7 @@ struct Args {
         value_name = "DIM"
     )]
     proj_dim: usize,
-    #[arg(long, value_delimiter = ',', help = "Topic files")]
+    #[arg(long, value_delimiter = ',', help = "Topic files", value_hint = clap::ValueHint::FilePath)]
     topics: Option<Vec<String>>,
     #[arg(long, value_enum, default_value = "zarr")]
     backend: Backend,
@@ -201,4 +201,13 @@ fn several_values_are_laid_out_as_the_flag_takes_them() {
     assert_eq!(emit("--f", Many::Listed, vs()), ["--f", "a", "-b"]);
     assert_eq!(emit("--f", Many::Repeated, vs()), ["--f", "a", "--f=-b"]);
     assert!(emit("--f", Many::One, vec![]).is_empty());
+}
+
+#[test]
+fn a_row_whose_value_clap_hints_is_a_path_takes_a_path() {
+    let f = form();
+    let row = |long: &str| f.fields.iter().find(|r| r.long == long).unwrap();
+    assert!(row("topics").takes_path());
+    assert_eq!(row("topics").value_hint, ValueHint::FilePath);
+    assert!(!row("proj-dim").takes_path());
 }

@@ -94,6 +94,7 @@ pub mod form;
 pub mod gallery;
 #[cfg(feature = "graphics")]
 pub mod graphics;
+pub mod keys;
 #[cfg(feature = "logs")]
 pub mod logs;
 #[cfg(any(
@@ -110,6 +111,7 @@ pub mod map;
 pub mod save;
 #[cfg(all(feature = "testing", sessions))]
 pub mod testing;
+pub mod text;
 #[cfg(feature = "widgets")]
 pub mod widgets;
 #[cfg(feature = "work")]
@@ -245,6 +247,20 @@ pub const RUN_KEY: &str = "ctrl+r";
 pub fn is_run_key(k: &ratatui::crossterm::event::KeyEvent) -> bool {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     matches!(k.code, KeyCode::Char('r' | 'R')) && k.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+/// The run key as a button sends it: ctrl+r.
+#[must_use]
+pub fn run_key_event() -> ratatui::crossterm::event::KeyEvent {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
+}
+
+/// What a screen says when Enter (plain, or held with Shift, Alt or Ctrl)
+/// did nothing: that [`RUN_KEY`] `does` it.
+#[must_use]
+pub fn enter_hint(does: &str) -> String {
+    format!("Enter does nothing here; {RUN_KEY} {does}")
 }
 
 /// A session of this process offers the detach and switch keys

@@ -12,7 +12,7 @@
 pub mod script;
 
 use crate::look::Look;
-use clap::{Arg, ArgAction, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -118,6 +118,9 @@ pub struct Field {
     /// Hidden from `--help`: shown only with the advanced rows.
     pub advanced: bool,
     pub many: Many,
+    /// What clap says the value is (`FilePath`, `DirPath`, …), for a
+    /// form that opens a file browser on such rows.
+    pub value_hint: ValueHint,
 }
 
 impl Field {
@@ -187,10 +190,21 @@ impl Field {
             default,
             required: a.is_required_set(),
             advanced: a.is_hide_set(),
+            value_hint: a.get_value_hint(),
             kind,
             many,
             long,
         })
+    }
+
+    /// Whether the value is a path: a file, a folder or either, as clap's
+    /// value hint says.
+    #[must_use]
+    pub fn takes_path(&self) -> bool {
+        matches!(
+            self.value_hint,
+            ValueHint::FilePath | ValueHint::AnyPath | ValueHint::DirPath
+        )
     }
 
     /// Whether `name` (without `--`) is this flag's long name or one of

@@ -135,6 +135,8 @@ impl Field {
 pub enum Numbering {
     /// `stem`, then `stem-2`, `stem-3`, … (senna).
     Suffix,
+    /// `stem`, then `stem2`, `stem3`, … (faba).
+    Joined,
     /// `stem-001`, `stem-002`, … in `digits` digits at least (pinto).
     Counter { digits: usize },
 }
@@ -154,18 +156,57 @@ pub fn taken(stem: &str, suffixes: &[impl AsRef<str>]) -> Vec<PathBuf> {
 /// files (`stem` and each of `suffixes`) exists yet.
 #[must_use]
 pub fn free_stem(stem: &str, suffixes: &[impl AsRef<str>], numbering: Numbering) -> String {
-    let free = |s: &str| taken(s, suffixes).is_empty();
+    first_free(stem, numbering, |s| taken(s, suffixes).is_empty())
+}
+
+/// The first name from `stem`, numbered as `numbering` says, that is
+/// `free`.
+fn first_free(stem: &str, numbering: Numbering, free: impl Fn(&str) -> bool) -> String {
+    let numbered = |from: usize, name: &dyn Fn(usize) -> String| {
+        (from..)
+            .map(name)
+            .find(|s| free(s))
+            .expect("some number is free")
+    };
     match numbering {
-        Numbering::Suffix if free(stem) => stem.to_string(),
-        Numbering::Suffix => (2..)
-            .map(|k| format!("{stem}-{k}"))
-            .find(|s| free(s))
-            .expect("some number is free"),
-        Numbering::Counter { digits } => (1..)
-            .map(|k| format!("{stem}-{k:0digits$}"))
-            .find(|s| free(s))
-            .expect("some number is free"),
+        Numbering::Suffix | Numbering::Joined if free(stem) => stem.to_string(),
+        Numbering::Suffix => numbered(2, &|k| format!("{stem}-{k}")),
+        Numbering::Joined => numbered(2, &|k| format!("{stem}{k}")),
+        Numbering::Counter { digits } => numbered(1, &|k| format!("{stem}-{k:0digits$}")),
     }
+}
+
+/// `base/{stem}{ext}`, or `base/{stem}2{ext}`, `base/{stem}3{ext}`, …:
+/// the first that does not exist yet, numbered before the extension
+/// (faba's).
+#[must_use]
+pub fn next_free_file(base: &Path, stem: &str, ext: &str) -> PathBuf {
+    let name = first_free(stem, Numbering::Joined, |s| {
+        !base.join(format!("{s}{ext}")).exists()
+    });
+    base.join(format!("{name}{ext}"))
+}
+
+/// `base/stem`, or `base/stem2`, `base/stem3`, …: the first that does not
+/// exist yet.
+#[must_use]
+pub fn next_free(base: &Path, stem: &str) -> PathBuf {
+    next_free_file(base, stem, "")
+}
+
+/// Why folder `out` cannot take a run's outputs, if it cannot: it is
+/// unnamed, a file, or a folder with files in it.
+#[must_use]
+pub fn output_problem(out: &str) -> Option<String> {
+    let path = Path::new(out);
+    if out.is_empty() {
+        return Some("name a directory".into());
+    }
+    if path.is_file() {
+        return Some(format!("{out} is a file"));
+    }
+    let non_empty = std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_some());
+    non_empty.then(|| format!("{out} already contains files; choose an empty one"))
 }
 
 /// `name` trimmed, `~` expanded, and without any of `exts` it ends in.
