@@ -73,6 +73,19 @@ work = []
 # drawn, for the mouse; pop-ups, buttons and tabs; progress bars; a
 # numbered choice menu. ratatui only.
 widgets = []
+# The screen loop the tools' views run in: a `Screen` driven key by key
+# in a session, several views on one screen with the tool's work between
+# them, a stop taken as the view's quit, the session keys on the title row,
+# and the chrome (header, panel, help and input lines).
+view = ["logs"]
+# Histograms in text: scales, bins, the axis values sit on, and bar plots
+# into a ratatui buffer. ratatui only, apart from `chart`, whose map
+# rendering they need none of.
+hist = []
+# Figures as images in a view: an SVG rasterised (resvg, with the system's
+# fonts) to a plot area's pixels, made again only when the view, the area
+# or the attached terminal changes.
+figure = ["graphics", "dep:usvg", "dep:resvg", "dep:image"]
 
 [dependencies]
 # `unstable-rendered-line-info`: a paragraph's wrapped row count, for popups.
@@ -93,6 +106,8 @@ miniz_oxide = { version = "0.8", optional = true }
 flate2 = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 sha2 = { version = "0.11", optional = true }
+usvg = { version = "0.45", optional = true }
+resvg = { version = "0.45", optional = true, default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 
 # Pseudo-terminals, sessions and signals; Unix only.
 [target.'cfg(unix)'.dependencies]

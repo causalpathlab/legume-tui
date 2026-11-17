@@ -101,3 +101,36 @@ fn the_harness_runs_the_session_commands_of_its_tool() {
         ["session", "kill", "tool-1", "--force"]
     );
 }
+
+#[test]
+fn missing_keys_names_what_a_screen_lacks() {
+    use ratatui::text::{Line, Span};
+    let help = Line::from(vec![
+        Span::raw(" "),
+        Span::raw("q"),
+        Span::raw(" quit  "),
+        Span::raw("s"),
+        Span::raw(" save  "),
+    ]);
+    assert!(missing_keys(&help, "q quit  s save").is_empty());
+    assert_eq!(missing_keys(&help, "q quit"), ["s", "save"]);
+}
+
+#[cfg(feature = "view")]
+#[test]
+fn screen_text_is_the_drawn_rows() {
+    use crate::view::Screen;
+    use ratatui::crossterm::event::KeyEvent;
+    struct Hello;
+    impl Screen for Hello {
+        fn render(&mut self, frame: &mut ratatui::Frame) {
+            frame.render_widget("hello", frame.area());
+        }
+        fn handle_key(&mut self, _: KeyEvent) {}
+        fn interrupt(&mut self) {}
+        fn done(&self) -> bool {
+            true
+        }
+    }
+    assert_eq!(screen_text(&mut Hello, 6, 2), "hello \n      ");
+}

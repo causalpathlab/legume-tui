@@ -650,6 +650,31 @@ impl Term {
     }
 }
 
+/// The screen of `view` drawn `w` x `h` on a test backend, as text: its
+/// rows joined by newlines.
+#[cfg(feature = "view")]
+pub fn screen_text(view: &mut impl crate::view::Screen, w: u16, h: u16) -> String {
+    let backend = ratatui::backend::TestBackend::new(w, h);
+    let mut t = ratatui::Terminal::new(backend).expect("a test backend draws");
+    t.draw(|f| view.render(f)).expect("a test backend draws");
+    let buf = t.backend().buffer();
+    (0..h)
+        .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The keys and descriptions of `help` (a help line's spans) that
+/// `screen` does not show, as a test reads a drawn terminal: empty when
+/// every one is there.
+pub fn missing_keys(help: &ratatui::text::Line, screen: &str) -> Vec<String> {
+    help.spans
+        .iter()
+        .map(|s| s.content.trim().to_string())
+        .filter(|t| !t.is_empty() && !screen.contains(t.as_str()))
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "tests/testing.rs"]
 mod tests;
