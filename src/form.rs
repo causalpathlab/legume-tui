@@ -304,7 +304,7 @@ pub fn marker(on: bool, look: &Look) -> Span<'static> {
 /// Row `f` as a line of the form: marked when `at`, starred and its
 /// default beside it when changed, its name `width` wide in `style` with
 /// `shown` (the value as it reads), and `complaint` after it when one blames
-/// it.
+/// it, in the look's accent.
 #[must_use]
 pub fn row_line(
     f: &Field,
@@ -331,7 +331,7 @@ pub fn row_line(
         spans.push(Span::styled(format!("  (default {d})"), look.hint));
     }
     if let Some(c) = complaint {
-        spans.push(Span::styled(format!("  {c}"), look.bold));
+        spans.push(Span::styled(format!("  {c}"), look.accent));
     }
     Line::from(spans)
 }
