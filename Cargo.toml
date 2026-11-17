@@ -24,7 +24,7 @@ graphics = ["dep:ratatui-image"]
 logs = ["dep:log"]
 # A stoppable runner of child processes that follows their logs and
 # progress bars (Unix).
-child = ["dep:unicode-width"]
+child = ["dep:unicode-width", "widgets"]
 # A harness that drives a tool's TUI through pseudo-terminals, for its tests:
 # canned terminal answers and a model of the visible screen.
 testing = ["dep:tempfile", "dep:vt100"]
@@ -68,6 +68,10 @@ browse = []
 # Work on another thread while a screen stays up: answers picked up
 # between frames, a spinner, and waits that show only slow work. ratatui only.
 work = []
+# Small pieces the views share, drawn in a `Look`: where each thing was
+# drawn, for the mouse; pop-ups, buttons and tabs; progress bars; a
+# numbered choice menu. ratatui only.
+widgets = []
 
 [dependencies]
 # `unstable-rendered-line-info`: a paragraph's wrapped row count, for popups.
