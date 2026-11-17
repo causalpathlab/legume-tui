@@ -62,8 +62,9 @@ gallery-trace = ["gallery", "dep:sha2"]
 # command line the filled form stands for, clap's check of it and the flag
 # its complaint blames, and the script that runs it again.
 form = ["clap"]
-# A file browser: one folder's subfolders and files, narrowed by what is
-# typed, with typed paths walked. ratatui only.
+# A file browser: one folder's subfolders and the files a caller wants,
+# listed on a worker thread, narrowed by what is typed, typed paths
+# followed, files marked across folders. ratatui only.
 browse = []
 
 [dependencies]

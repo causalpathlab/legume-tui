@@ -5,8 +5,10 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-/// Styles for a popup or a strip.
+/// Styles for a popup or a strip. Built with [`Look::new`] or
+/// [`Look::terminal`]: more styles may come, so not field by field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Look {
     /// The page: text on the background.
     pub page: Style,
@@ -18,21 +20,54 @@ pub struct Look {
     pub selected: Style,
     /// Borders and rules.
     pub border: Style,
+    /// What wants attention: a warning, a refusal, clap's complaint.
+    pub accent: Style,
 }
 
+/// [`Look::terminal`]'s accent: bold yellow.
+const ACCENT: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+
 impl Look {
-    /// The terminal's colours: bold, grey hints, the cursor's line
-    /// reversed (pinto's).
+    /// A look of these styles.
     #[must_use]
-    pub fn terminal() -> Self {
-        let hint = Style::default().fg(Color::DarkGray);
+    pub const fn new(
+        page: Style,
+        bold: Style,
+        hint: Style,
+        selected: Style,
+        border: Style,
+        accent: Style,
+    ) -> Self {
         Self {
-            page: Style::default(),
-            bold: Style::default().add_modifier(Modifier::BOLD),
+            page,
+            bold,
             hint,
-            selected: Style::default().add_modifier(Modifier::REVERSED),
-            border: hint,
+            selected,
+            border,
+            accent,
         }
+    }
+
+    /// The terminal's colours: bold, grey hints, the cursor's line
+    /// reversed (pinto's), warnings bold yellow.
+    #[must_use]
+    pub const fn terminal() -> Self {
+        let hint = Style::new().fg(Color::DarkGray);
+        Self::new(
+            Style::new(),
+            Style::new().add_modifier(Modifier::BOLD),
+            hint,
+            Style::new().add_modifier(Modifier::REVERSED),
+            hint,
+            ACCENT,
+        )
+    }
+
+    /// This look with `accent` for what wants attention.
+    #[must_use]
+    pub const fn with_accent(mut self, accent: Style) -> Self {
+        self.accent = accent;
+        self
     }
 }
 
@@ -44,14 +79,20 @@ impl Default for Look {
 
 #[cfg(feature = "map")]
 impl From<crate::chrome::Chrome> for Look {
-    /// A screen's chrome: a theme's colours, or the terminal's.
+    /// A screen's chrome: a theme's colours, or the terminal's; the
+    /// terminal's accent either way, as a chrome has none of its own.
     fn from(c: crate::chrome::Chrome) -> Self {
-        Self {
-            page: c.page(),
-            bold: c.bold(),
-            hint: c.hint(),
-            selected: c.selected(),
-            border: c.border(),
-        }
+        Self::new(
+            c.page(),
+            c.bold(),
+            c.hint(),
+            c.selected(),
+            c.border(),
+            ACCENT,
+        )
     }
 }
+
+#[cfg(test)]
+#[path = "tests/look.rs"]
+mod tests;

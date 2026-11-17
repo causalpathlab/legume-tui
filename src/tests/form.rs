@@ -181,6 +181,8 @@ fn a_changed_row_shows_its_default_and_a_complaint() {
         text.contains("(default 10)") && text.ends_with("bad"),
         "{text}"
     );
+    // The complaint wants attention.
+    assert_eq!(line.spans.last().unwrap().style, look.accent);
     let scale = f.get("scale").unwrap();
     assert_eq!(scale.shown(), "(unset)");
     assert_eq!(f.get("preload").unwrap().shown(), "off");
