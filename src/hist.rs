@@ -363,45 +363,133 @@ pub struct HistPlot<'a, T: BarValue = usize> {
 
 const EIGHTHS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
+/// A plot's areas in `area`: the y gutter and the chart right of it over
+/// the last two rows, which hold the x axis and its labels.
+fn frame(area: Rect) -> [Rect; 4] {
+    let [plot, axis, labels] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    let [gutter, chart] =
+        Layout::horizontal([Constraint::Length(GUTTER), Constraint::Min(1)]).areas(plot);
+    [gutter, chart, axis, labels]
+}
+
+/// Bar lengths on a y scale, in whole `cells` units of its top.
+#[derive(Clone, Copy)]
+struct YScale {
+    scale: Scale,
+    /// The top: the tallest bar, or `y_max` if higher, on the scale.
+    max_h: f64,
+    cells: usize,
+}
+
+impl YScale {
+    fn new<T: BarValue>(
+        scale: Scale,
+        y_max: Option<f64>,
+        counts: impl IntoIterator<Item = T>,
+        cells: usize,
+    ) -> Self {
+        let tallest = counts
+            .into_iter()
+            .map(|c| scale.apply(c.bar().max(0.0)))
+            .fold(0.0, f64::max);
+        let max_h = y_max.map_or(tallest, |m| scale.apply(m.max(0.0)).max(tallest));
+        Self {
+            scale,
+            max_h,
+            cells,
+        }
+    }
+
+    /// `c`'s length in units: none for nothing, else at least one.
+    fn units<T: BarValue>(self, c: T) -> usize {
+        if c.bar() <= 0.0 || self.max_h <= 0.0 {
+            0
+        } else {
+            let h = self.scale.apply(c.bar().max(0.0));
+            ((h / self.max_h * self.cells as f64).round() as usize).clamp(1, self.cells)
+        }
+    }
+
+    /// The count at `t` of the top.
+    fn value_at(self, t: f64) -> f64 {
+        self.scale.invert(self.max_h * t)
+    }
+}
+
+/// The axis lines: the y axis down the gutter's last column, which it
+/// returns, and the x axis from there along `axis`.
+fn axes(buf: &mut Buffer, gutter: Rect, axis: Rect, dim: Style) -> u16 {
+    let gx = gutter.right() - 1;
+    for y in gutter.top()..gutter.bottom() {
+        put(buf, gx, y, "│", dim);
+    }
+    for x in axis.left()..axis.right() {
+        let sym = match x.cmp(&gx) {
+            std::cmp::Ordering::Less => " ",
+            std::cmp::Ordering::Equal => "└",
+            std::cmp::Ordering::Greater => "─",
+        };
+        put(buf, x, axis.y, sym, dim);
+    }
+    gx
+}
+
+/// `s` on the y axis at row `y`, right-aligned in the gutter.
+fn y_label(buf: &mut Buffer, gutter: Rect, y: u16, s: &str, dim: Style) {
+    let gx = gutter.right() - 1;
+    let x = gx.saturating_sub(1 + s.len() as u16).max(gutter.x);
+    buf.set_string(x, y, s, dim);
+    put(buf, gx, y, "┤", dim);
+}
+
+/// A tick at column `x` of `axis`, labelled `s` below where it fits clear
+/// of the label before (which ended before `next_free`).
+fn x_tick(
+    buf: &mut Buffer,
+    x: u16,
+    axis: Rect,
+    labels: Rect,
+    next_free: &mut u16,
+    s: &str,
+    dim: Style,
+) {
+    put(buf, x, axis.y, "┴", dim);
+    if x >= *next_free && x + (s.len() as u16) <= labels.right() {
+        buf.set_string(x, labels.y, s, dim);
+        *next_free = x + s.len() as u16 + 1;
+    }
+}
+
 impl<T: BarValue> HistPlot<'_, T> {
     /// Draw into `area`: bars over the rows above the last two, which hold
     /// the x axis and its labels; the left [`GUTTER`] columns hold the y axis.
     pub fn render(&self, buf: &mut Buffer, area: Rect) {
         let look = &self.look;
         let (dim, accented, highlight) = (look.hint, ink::accent(look), ink::highlight(look));
-        let [plot, axis, labels] = Layout::vertical([
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        let [gutter, chart] =
-            Layout::horizontal([Constraint::Length(GUTTER), Constraint::Min(1)]).areas(plot);
+        let [gutter, chart, axis, labels] = frame(area);
         if chart.width == 0 || chart.height == 0 {
             return;
         }
         let nbins = self.counts.len();
         let bw = (chart.width / nbins.max(1) as u16).clamp(1, 4);
+        // The bars that fit in the chart, and those of them `counts` has.
+        let fit = usize::from(chart.width.div_ceil(bw));
+        let shown = nbins.min(fit);
         let x_of = |k: i32| -> Option<u16> {
             let i = k - self.kmin;
-            (i >= 0 && (i as usize) < nbins)
-                .then(|| chart.x + i as u16 * bw)
-                .filter(|&x| x < chart.right())
+            (i >= 0 && (i as usize) < shown).then(|| chart.x + i as u16 * bw)
         };
-
-        let height = |c: T| self.y_scale.apply(c.bar().max(0.0));
-        let tallest = self.counts.iter().map(|&c| height(c)).fold(0.0, f64::max);
-        let max_h = self
-            .y_max
-            .map_or(tallest, |m| self.y_scale.apply(m.max(0.0)).max(tallest));
-        let cells = chart.height as usize * 8;
-        let eighths = |c: T| {
-            if c.bar() <= 0.0 || max_h <= 0.0 {
-                0
-            } else {
-                ((height(c) / max_h * cells as f64).round() as usize).clamp(1, cells)
-            }
-        };
+        let y = YScale::new(
+            self.y_scale,
+            self.y_max,
+            self.counts.iter().copied(),
+            chart.height as usize * 8,
+        );
 
         if let Some(x) = self.pointer.and_then(x_of) {
             for y in chart.top()..chart.bottom() {
@@ -410,19 +498,16 @@ impl<T: BarValue> HistPlot<'_, T> {
         }
 
         let mut bars = |counts: &[T], behind: Option<&[T]>, dimmed: bool| {
-            for (i, &c) in counts.iter().enumerate() {
+            for (i, &c) in counts.iter().enumerate().take(fit) {
                 let x0 = chart.x + i as u16 * bw;
-                if x0 >= chart.right() {
-                    break;
-                }
                 let style = if dimmed {
                     dim
                 } else {
                     (self.style)(self.kmin + i as i32)
                 };
                 // A bar `behind` lacks (a subset counted on other bins) is 0.
-                let under = behind.and_then(|b| b.get(i)).map_or(0, |&b| eighths(b));
-                let top = eighths(c);
+                let under = behind.and_then(|b| b.get(i)).map_or(0, |&b| y.units(b));
+                let top = y.units(c);
                 for (j, y) in (chart.top()..chart.bottom()).rev().enumerate() {
                     let mut fill = top.saturating_sub(j * 8).min(8);
                     if fill == 0 {
@@ -446,39 +531,20 @@ impl<T: BarValue> HistPlot<'_, T> {
         }
 
         // y axis: count at the top and at half height on the y scale.
-        let gx = gutter.right() - 1;
-        for y in gutter.top()..gutter.bottom() {
-            put(buf, gx, y, "│", dim);
-        }
-        let mut ylabel = |y: u16, v: f64| {
-            let s = compact(v);
-            let x = gx.saturating_sub(1 + s.len() as u16).max(gutter.x);
-            buf.set_string(x, y, &s, dim);
-            put(buf, gx, y, "┤", dim);
-        };
-        if max_h > 0.0 {
-            ylabel(gutter.top(), self.y_scale.invert(max_h));
+        axes(buf, gutter, axis, dim);
+        if y.max_h > 0.0 {
+            y_label(buf, gutter, gutter.top(), &compact(y.value_at(1.0)), dim);
             if gutter.height >= 6 {
-                ylabel(
-                    gutter.top() + gutter.height / 2,
-                    self.y_scale.invert(max_h / 2.0),
-                );
+                let mid = gutter.top() + gutter.height / 2;
+                y_label(buf, gutter, mid, &compact(y.value_at(0.5)), dim);
             }
         }
 
-        // x axis: baseline with ticks, labels below, then the marks.
-        for x in axis.left()..axis.right() {
-            let sym = match x.cmp(&gx) {
-                std::cmp::Ordering::Less => " ",
-                std::cmp::Ordering::Equal => "└",
-                std::cmp::Ordering::Greater => "─",
-            };
-            put(buf, x, axis.y, sym, dim);
-        }
+        // x axis: ticks, labels below, then the marks.
         let mut next_free = labels.x;
         let kmax = self.kmin + nbins as i32 - 1;
-        // Labels given, or a spacing, tick every so many bins; else the
-        // bins' own ticks (round values on the log scale).
+        // Labels given, or a spacing, tick every so many bins that fit;
+        // else the bins' own ticks (round values on the log scale).
         let ticks: Vec<(i32, Option<f64>)> = match (self.x_label, self.tick_every) {
             (None, None) => self
                 .bins
@@ -491,7 +557,7 @@ impl<T: BarValue> HistPlot<'_, T> {
                     .tick_every
                     .unwrap_or_else(|| self.bins.tick_every(nbins))
                     .max(1);
-                (self.kmin..=kmax)
+                (self.kmin..self.kmin + shown as i32)
                     .filter(|k| k % every == 0)
                     .map(|k| (k, None))
                     .collect()
@@ -507,11 +573,7 @@ impl<T: BarValue> HistPlot<'_, T> {
                 (None, Some(v)) => compact(v),
                 (None, None) => compact(self.bins.tick_value(k)),
             };
-            put(buf, x, axis.y, "┴", dim);
-            if x >= next_free && x + (s.len() as u16) <= labels.right() {
-                buf.set_string(x, labels.y, &s, dim);
-                next_free = x + s.len() as u16 + 1;
-            }
+            x_tick(buf, x, axis, labels, &mut next_free, &s, dim);
         }
         let pointer = self.pointer.map(|k| (k, "▲", highlight));
         for &(k, sym, style) in self.marks.iter().chain(pointer.iter()) {
@@ -567,35 +629,15 @@ impl<T: BarValue> MirrorPlot<'_, T> {
     pub fn render(&self, buf: &mut Buffer, area: Rect) {
         let look = &self.look;
         let (dim, accented, highlight) = (look.hint, ink::accent(look), ink::highlight(look));
-        let [plot, axis, labels] = Layout::vertical([
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        let [gutter, chart] =
-            Layout::horizontal([Constraint::Length(GUTTER), Constraint::Min(1)]).areas(plot);
+        let [gutter, chart, axis, labels] = frame(area);
         if chart.width == 0 || chart.height < 3 {
             return;
         }
         let half = (chart.height - 1) / 2;
         let zero = chart.top() + half;
         let x_of = |i: usize| Some(chart.x + i as u16).filter(|&x| x < chart.right());
-
-        let height = |c: T| self.y_scale.apply(c.bar().max(0.0));
-        let all = self.up.counts.iter().chain(self.down.counts);
-        let tallest = all.map(|&c| height(c)).fold(0.0, f64::max);
-        let max_h = self
-            .y_max
-            .map_or(tallest, |m| self.y_scale.apply(m.max(0.0)).max(tallest));
-        let cells = half as usize * 2;
-        let halves = |c: T| {
-            if c.bar() <= 0.0 || max_h <= 0.0 {
-                0
-            } else {
-                ((height(c) / max_h * cells as f64).round() as usize).clamp(1, cells)
-            }
-        };
+        let all = self.up.counts.iter().chain(self.down.counts).copied();
+        let y = YScale::new(self.y_scale, self.y_max, all, half as usize * 2);
 
         if let Some(x) = self.pointer.and_then(x_of) {
             for y in chart.top()..chart.top() + 2 * half + 1 {
@@ -611,8 +653,8 @@ impl<T: BarValue> MirrorPlot<'_, T> {
                 for (i, &c) in counts.iter().enumerate() {
                     let Some(x) = x_of(i) else { break };
                     // A bar `behind` lacks is 0, as in HistPlot.
-                    let under = behind.and_then(|b| b.get(i)).map_or(0, |&b| halves(b));
-                    let top = halves(c);
+                    let under = behind.and_then(|b| b.get(i)).map_or(0, |&b| y.units(b));
+                    let top = y.units(c);
                     for k in 0..top.div_ceil(2) {
                         let y = if up {
                             zero - 1 - k as u16
@@ -638,12 +680,9 @@ impl<T: BarValue> MirrorPlot<'_, T> {
         buf.set_string(chart.x, chart.top() + 2 * half, self.down.name, dim);
 
         // y axis: the scale's top on both sides of the zero line.
-        let gx = gutter.right() - 1;
-        for y in gutter.top()..gutter.bottom() {
-            put(buf, gx, y, "│", dim);
-        }
+        axes(buf, gutter, axis, dim);
         let own = || {
-            let top = compact(self.y_scale.invert(max_h));
+            let top = compact(y.value_at(1.0));
             [top.clone(), "0".to_string(), top]
         };
         let ys = [chart.top(), zero, chart.top() + 2 * half];
@@ -651,31 +690,16 @@ impl<T: BarValue> MirrorPlot<'_, T> {
             .into_iter()
             .zip(self.y_labels.clone().unwrap_or_else(own))
         {
-            let x = gx.saturating_sub(1 + s.len() as u16).max(gutter.x);
-            buf.set_string(x, y, &s, dim);
-            put(buf, gx, y, "┤", dim);
+            y_label(buf, gutter, y, &s, dim);
         }
 
-        // x axis: baseline with ticks, labels below, then the pointer.
-        for x in axis.left()..axis.right() {
-            let sym = match x.cmp(&gx) {
-                std::cmp::Ordering::Less => " ",
-                std::cmp::Ordering::Equal => "└",
-                std::cmp::Ordering::Greater => "─",
-            };
-            put(buf, x, axis.y, sym, dim);
-        }
+        // x axis: ticks, labels below, then the pointer.
         let n = self.up.counts.len().max(self.down.counts.len());
         let mut next_free = labels.x;
         for i in 0..n {
             let Some(x) = x_of(i) else { break };
-            let Some(s) = self.x_label.and_then(|label| label(i)) else {
-                continue;
-            };
-            put(buf, x, axis.y, "┴", dim);
-            if x >= next_free && x + (s.len() as u16) <= labels.right() {
-                buf.set_string(x, labels.y, &s, dim);
-                next_free = x + s.len() as u16 + 1;
+            if let Some(s) = self.x_label.and_then(|label| label(i)) {
+                x_tick(buf, x, axis, labels, &mut next_free, &s, dim);
             }
         }
         if let Some(x) = self.pointer.and_then(x_of) {

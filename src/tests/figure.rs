@@ -69,25 +69,38 @@ fn a_plot_image_is_made_again_only_when_stale_or_resized() {
     let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
     let mut calls = 0;
     let mut frame = |plot: &mut PlotImage, area: Rect, calls: &mut i32| {
+        let mut drawn = false;
         term.draw(|f| {
-            let drawn = plot.render_at(f, area, &picker, 0, |w, h| {
+            drawn = plot.render_at(f, area, &picker, 0, |w, h| {
                 *calls += 1;
                 svg(w, h)
             });
-            assert!(drawn);
         })
         .unwrap();
+        drawn
     };
     let area = Rect::new(0, 0, 20, 5);
-    frame(&mut plot, area, &mut calls);
-    frame(&mut plot, area, &mut calls);
+    assert!(frame(&mut plot, area, &mut calls), "the first made at once");
+    assert!(frame(&mut plot, area, &mut calls));
     assert_eq!(calls, 1, "unchanged view: kept");
     plot.invalidate();
     assert!(plot.is_stale());
-    frame(&mut plot, area, &mut calls);
+    assert!(frame(&mut plot, area, &mut calls));
     assert_eq!(calls, 2, "stale: made again");
-    frame(&mut plot, Rect::new(0, 0, 30, 6), &mut calls);
-    assert_eq!(calls, 3, "resized: made again");
+    // A resize under way: text until a frame finds the same size again.
+    for size in [30, 34, 36] {
+        let resized = Rect::new(0, 0, size, 6);
+        assert!(!frame(&mut plot, resized, &mut calls), "{size}: text");
+        assert!(plot.is_stale(), "a redraw owed");
+    }
+    assert_eq!(calls, 2, "not made while the size changes");
+    assert!(frame(&mut plot, Rect::new(0, 0, 36, 6), &mut calls));
+    assert_eq!(calls, 3, "resized: made again once settled");
+    assert!(!plot.is_stale());
+    assert!(!frame(&mut plot, Rect::new(0, 0, 30, 6), &mut calls));
+    assert!(frame(&mut plot, Rect::new(0, 0, 36, 6), &mut calls));
+    assert_eq!(calls, 3, "back to the made size: kept");
+    assert!(!plot.is_stale());
 }
 
 #[test]

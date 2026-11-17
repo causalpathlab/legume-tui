@@ -385,3 +385,45 @@ fn a_subset_on_other_bins_draws_without_panicking() {
     let rows = draw_mirror(&plot, 12, 9);
     assert!(rows[3].contains('─'), "{rows:?}");
 }
+
+#[test]
+fn a_histogram_draws_as_before() {
+    let counts = [1usize, 3, 6, 2, 0, 4, 5, 2, 1, 7, 3, 2];
+    let subset = [0usize, 1, 3, 1, 0, 2];
+    let label = |k: i32| Some(format!("{k}"));
+    let plot = HistPlot {
+        bins: Binning::with_width(Scale::Linear, 1.0),
+        kmin: 0,
+        counts: &counts,
+        style: &|_| Style::new(),
+        subset: Some(&subset),
+        y_scale: Scale::Linear,
+        y_max: None,
+        pointer: Some(3),
+        marks: vec![(5, "x", Style::new())],
+        x_label: Some(&label),
+        tick_every: Some(4),
+        look: Look::default(),
+    };
+    // Narrower than the bars: those past the edge are left out.
+    let area = Rect::new(0, 0, GUTTER + 10, 8);
+    let mut buf = Buffer::empty(area);
+    plot.render(&mut buf, area);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+    assert_eq!(rows, SNAPSHOT, "{rows:#?}");
+}
+
+/// [`a_histogram_draws_as_before`]'s rows: the subset in front, the
+/// pointer's rule and ▲, a mark, labelled ticks every 4 bins.
+const SNAPSHOT: [&str; 8] = [
+    "   7 ┤  ▁┊     █",
+    "     │  █┊  ▂  █",
+    "     │  █┊ ▃█  █",
+    " 3.5 ┤ ▅█┊ ██  █",
+    "     │ ██▆ ██▆ █",
+    "     │▇███ ███▇█",
+    "     └┴──▲┴x──┴─",
+    "      0   4   8 ",
+];
