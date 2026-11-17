@@ -296,4 +296,21 @@ fn the_run_key_is_ctrl_r_only() {
     assert!(!is_run_key(&k('r', KeyModifiers::NONE)));
     assert!(!is_run_key(&k('s', KeyModifiers::CONTROL)));
     assert_eq!(RUN_KEY, "ctrl+r");
+    assert!(is_run_key(&run_key_event()));
+    assert_eq!(
+        enter_hint("runs the fit"),
+        "Enter does nothing here; ctrl+r runs the fit"
+    );
+}
+
+#[test]
+fn a_disambiguated_screen_asks_for_the_enhancement_where_it_is() {
+    use ratatui::crossterm::event::KeyboardEnhancementFlags;
+    let m = Modes::disambiguated();
+    assert_eq!(m.keyboard_enhancement, Keyboard::DISAMBIGUATE);
+    assert_eq!(m.mouse, Mouse::Off);
+    assert_eq!(
+        Keyboard::DISAMBIGUATE,
+        Keyboard::IfSupported(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
 }

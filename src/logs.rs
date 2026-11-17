@@ -214,6 +214,83 @@ impl Drop for QuietStderr {
     }
 }
 
+/// A logger for a pane of the tool's own: each record at its level or
+/// above kept as `[LEVEL] message` for the pane to take ([`drain`]), and
+/// passed on to the tool's stderr logger behind its gate. lupin's
+/// `PaneLogger` (`src/tui/mod.rs`). Only the latest 10,000 lines wait to
+/// be taken.
+///
+/// [`drain`]: PaneLogger::drain
+pub struct PaneLogger {
+    level: LevelFilter,
+    gate: &'static Gate,
+    skip: Option<fn(&Metadata) -> bool>,
+    lines: Mutex<VecDeque<String>>,
+}
+
+impl PaneLogger {
+    /// Records at `level` or above, kept and passed on to `gate`.
+    #[must_use]
+    pub fn new(level: LevelFilter, gate: &'static Gate) -> Self {
+        Self {
+            level,
+            gate,
+            skip: None,
+            lines: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Records `skip` says are noise neither kept nor passed on (a
+    /// library's notes below debug, say).
+    #[must_use]
+    pub fn skipping(self, skip: fn(&Metadata) -> bool) -> Self {
+        Self {
+            skip: Some(skip),
+            ..self
+        }
+    }
+
+    /// Set as the process's logger, its level the log level; it lives as
+    /// long as the process. Fails when a logger is set already.
+    pub fn install(self) -> Result<&'static Self, log::SetLoggerError> {
+        let level = self.level;
+        let me: &'static Self = Box::leak(Box::new(self));
+        log::set_logger(me)?;
+        log::set_max_level(level);
+        Ok(me)
+    }
+
+    /// The lines kept since the last drain, oldest first.
+    pub fn drain(&self) -> Vec<String> {
+        let mut lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *lines).into()
+    }
+}
+
+impl Log for PaneLogger {
+    fn enabled(&self, m: &Metadata) -> bool {
+        m.level() <= self.level && !self.skip.is_some_and(|skip| skip(m))
+    }
+
+    fn log(&self, r: &Record) {
+        if !self.enabled(r.metadata()) {
+            return;
+        }
+        {
+            let mut lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
+            if lines.len() == KEPT {
+                lines.pop_front();
+            }
+            lines.push_back(format!("[{}] {}", r.level(), r.args()));
+        }
+        self.gate.log(r);
+    }
+
+    fn flush(&self) {
+        self.gate.flush();
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/logs.rs"]
 mod tests;

@@ -138,3 +138,24 @@ fn a_gate_holds_records_while_the_screen_is_up_and_mutes_only_itself() {
     assert_eq!(written[1], "n3");
     assert_eq!(written[KEPT], format!("n{}", KEPT + 2));
 }
+
+#[test]
+fn a_pane_logger_keeps_its_level_and_up_but_not_what_it_skips() {
+    let pane = PaneLogger::new(LevelFilter::Info, gate(Written::default()))
+        .skipping(|m| m.target().starts_with("usvg"));
+    let log = |level, target, msg: &str| {
+        pane.log(
+            &Record::builder()
+                .level(level)
+                .target(target)
+                .args(format_args!("{msg}"))
+                .build(),
+        );
+    };
+    log(Level::Info, "tool", "loaded");
+    log(Level::Debug, "tool", "detail");
+    log(Level::Warn, "usvg::text", "font fallback");
+    log(Level::Warn, "tool", "slow");
+    assert_eq!(pane.drain(), ["[INFO] loaded", "[WARN] slow"]);
+    assert!(pane.drain().is_empty(), "taken once");
+}

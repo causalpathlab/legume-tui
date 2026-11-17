@@ -40,6 +40,11 @@ pub enum Keyboard {
 }
 
 impl Keyboard {
+    /// Escape codes told apart (Shift+Enter from Enter, Esc from Alt) where
+    /// the attached terminal has the enhancement: what most screens ask.
+    pub const DISAMBIGUATE: Keyboard =
+        Keyboard::IfSupported(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
+
     /// The flags to ask for, given whether the terminal has the
     /// enhancement (`supported`).
     pub(crate) fn flags(self, supported: bool) -> Option<KeyboardEnhancementFlags> {
@@ -73,6 +78,12 @@ impl Modes {
             bracketed_paste: false,
             focus: false,
         }
+    }
+
+    /// None on but [`Keyboard::DISAMBIGUATE`]: keys held with Shift, Alt
+    /// or Ctrl told apart where the terminal can.
+    pub const fn disambiguated() -> Self {
+        Self::new().keyboard_enhancement(Keyboard::DISAMBIGUATE)
     }
 
     pub const fn mouse(self, mouse: Mouse) -> Self {
