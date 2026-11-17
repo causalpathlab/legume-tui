@@ -137,14 +137,8 @@ pub fn gauge(p: &Progress, width: usize, trend: &[f64], room: usize) -> String {
     let head = if p.len == 0 {
         "…".to_string()
     } else {
-        let filled = (width as u128 * u128::from(p.pos.min(p.len)) / u128::from(p.len)) as usize;
-        format!(
-            "{}{} {}/{}",
-            "█".repeat(filled),
-            "░".repeat(width - filled),
-            p.pos,
-            p.len
-        )
+        let bar = crate::text::bar(p.pos, p.len, width);
+        format!("{bar} {}/{}", p.pos, p.len)
     };
     let what = cut(&p.what, room.saturating_sub(head.width() + 1));
     let line = format!("{head} {what}");

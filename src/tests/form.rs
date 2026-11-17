@@ -27,7 +27,7 @@ struct Args {
         value_name = "DIM"
     )]
     proj_dim: usize,
-    #[arg(long, value_delimiter = ',', help = "Topic files")]
+    #[arg(long, value_delimiter = ',', help = "Topic files", value_hint = clap::ValueHint::FilePath)]
     topics: Option<Vec<String>>,
     #[arg(long, value_enum, default_value = "zarr")]
     backend: Backend,
@@ -181,6 +181,8 @@ fn a_changed_row_shows_its_default_and_a_complaint() {
         text.contains("(default 10)") && text.ends_with("bad"),
         "{text}"
     );
+    // The complaint wants attention.
+    assert_eq!(line.spans.last().unwrap().style, look.accent);
     let scale = f.get("scale").unwrap();
     assert_eq!(scale.shown(), "(unset)");
     assert_eq!(f.get("preload").unwrap().shown(), "off");
@@ -200,5 +202,28 @@ fn several_values_are_laid_out_as_the_flag_takes_them() {
     assert_eq!(emit("--f", Many::Joined(','), vs()), ["--f", "a,-b"]);
     assert_eq!(emit("--f", Many::Listed, vs()), ["--f", "a", "-b"]);
     assert_eq!(emit("--f", Many::Repeated, vs()), ["--f", "a", "--f=-b"]);
+}
+
+#[test]
+fn an_appending_flag_of_several_values_repeats_so_a_negative_one_parses() {
+    let a = clap::Arg::new("names")
+        .long("names")
+        .num_args(1..)
+        .action(clap::ArgAction::Append);
+    assert_eq!(many_of(&a), Many::Repeated);
+    let vs = vec!["-1".to_string(), "-2".to_string()];
+    assert_eq!(
+        emit("--names", many_of(&a), vs),
+        ["--names=-1", "--names=-2"]
+    );
     assert!(emit("--f", Many::One, vec![]).is_empty());
+}
+
+#[test]
+fn a_row_whose_value_clap_hints_is_a_path_takes_a_path() {
+    let f = form();
+    let row = |long: &str| f.fields.iter().find(|r| r.long == long).unwrap();
+    assert!(row("topics").takes_path());
+    assert_eq!(row("topics").value_hint, ValueHint::FilePath);
+    assert!(!row("proj-dim").takes_path());
 }

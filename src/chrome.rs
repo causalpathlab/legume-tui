@@ -4,7 +4,8 @@
 //!
 //! senna's styles and popups (`src/tui/style.rs`, `wrapped_rows` from
 //! `src/tui/mod.rs`) on its page's colours, and pinto's
-//! (`src/tui/style.rs`, with `short`, `middle`, `tail` and `wrap`) on the
+//! (`src/tui/style.rs`, with `short`, `middle`, `tail` and `wrap`, now in
+//! [`crate::text`] and re-exported here) on the
 //! terminal's: `Chrome { theme: None }` is pinto's, so both read on a dark
 //! or a light terminal. [`first_row`] was the same in both.
 
@@ -14,6 +15,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+
+pub use crate::text::{middle, short, tail, wrap, wrapped_rows};
 
 /// An sRGB colour for ratatui.
 #[must_use]
@@ -203,73 +206,6 @@ pub fn page_window(
         "end · "
     };
     (body.into_iter().skip(skip).take(room).collect(), stands)
-}
-
-/// How many rows `text` takes wrapped at word boundaries to `width`
-/// columns, as a wrapping paragraph lays it out; a word longer than a row
-/// is broken across rows of its own.
-#[must_use]
-pub fn wrapped_rows(text: &str, width: usize) -> usize {
-    // ratatui's own count, so a leading space and wide characters take
-    // the columns the paragraph gives them.
-    Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .line_count(u16::try_from(width.max(1)).unwrap_or(u16::MAX))
-        .max(1)
-}
-
-/// `s` in at most `n` characters, `…` marking a cut at the end.
-#[must_use]
-pub fn short(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    }
-}
-
-/// `s` in at most `n` characters, `…` marking a cut in the middle: the
-/// start and the end kept, so names sharing a prefix still differ.
-#[must_use]
-pub fn middle(s: &str, n: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= n {
-        return s.to_string();
-    }
-    let end = n.saturating_sub(1) / 2;
-    let start = n.saturating_sub(1) - end;
-    let mut out: String = chars[..start].iter().collect();
-    out.push('…');
-    out.extend(&chars[chars.len() - end..]);
-    out
-}
-
-/// The last `n` characters of `s`, `…` marking a cut at the start.
-#[must_use]
-pub fn tail(s: &str, n: usize) -> String {
-    let len = s.chars().count();
-    if len <= n {
-        s.to_string()
-    } else {
-        let mut out = String::from("…");
-        out.extend(s.chars().skip(len + 1 - n.max(1)));
-        out
-    }
-}
-
-/// `s` in pieces of at most `first` characters, then `rest` for each
-/// piece after the first; none for an empty `s`.
-#[must_use]
-pub fn wrap(s: &str, first: usize, rest: usize) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    let (head, tail) = chars.split_at(first.max(1).min(chars.len()));
-    std::iter::once(head)
-        .filter(|h| !h.is_empty())
-        .chain(tail.chunks(rest.max(1)))
-        .map(|c| c.iter().collect())
-        .collect()
 }
 
 #[cfg(test)]

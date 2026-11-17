@@ -12,7 +12,7 @@
 pub mod script;
 
 use crate::look::Look;
-use clap::{Arg, ArgAction, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -33,10 +33,12 @@ pub enum Many {
 pub fn many_of(a: &Arg) -> Many {
     if let Some(c) = a.get_value_delimiter() {
         Many::Joined(c)
+    } else if matches!(a.get_action(), ArgAction::Append) {
+        // Repeated before listed: `--f=-1 --f=-2` takes a value that looks
+        // like a flag, where `--f -1 -2` would not.
+        Many::Repeated
     } else if a.get_num_args().is_some_and(|r| r.max_values() > 1) {
         Many::Listed
-    } else if matches!(a.get_action(), ArgAction::Append) {
-        Many::Repeated
     } else {
         Many::One
     }
@@ -118,6 +120,9 @@ pub struct Field {
     /// Hidden from `--help`: shown only with the advanced rows.
     pub advanced: bool,
     pub many: Many,
+    /// What clap says the value is (`FilePath`, `DirPath`, …), for a
+    /// form that opens a file browser on such rows.
+    pub value_hint: ValueHint,
 }
 
 impl Field {
@@ -187,10 +192,21 @@ impl Field {
             default,
             required: a.is_required_set(),
             advanced: a.is_hide_set(),
+            value_hint: a.get_value_hint(),
             kind,
             many,
             long,
         })
+    }
+
+    /// Whether the value is a path: a file, a folder or either, as clap's
+    /// value hint says.
+    #[must_use]
+    pub fn takes_path(&self) -> bool {
+        matches!(
+            self.value_hint,
+            ValueHint::FilePath | ValueHint::AnyPath | ValueHint::DirPath
+        )
     }
 
     /// Whether `name` (without `--`) is this flag's long name or one of
@@ -290,7 +306,7 @@ pub fn marker(on: bool, look: &Look) -> Span<'static> {
 /// Row `f` as a line of the form: marked when `at`, starred and its
 /// default beside it when changed, its name `width` wide in `style` with
 /// `shown` (the value as it reads), and `complaint` after it when one blames
-/// it.
+/// it, in the look's accent.
 #[must_use]
 pub fn row_line(
     f: &Field,
@@ -317,7 +333,7 @@ pub fn row_line(
         spans.push(Span::styled(format!("  (default {d})"), look.hint));
     }
     if let Some(c) = complaint {
-        spans.push(Span::styled(format!("  {c}"), look.bold));
+        spans.push(Span::styled(format!("  {c}"), look.accent));
     }
     Line::from(spans)
 }

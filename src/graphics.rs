@@ -27,6 +27,9 @@
 //! for kitty's keyboard enhancement, which the session keeps for the
 //! modes that depend on it ([`crate::Keyboard::IfSupported`]).
 
+#[cfg(feature = "figure")]
+pub mod figure;
+
 use crate::Session;
 use ratatui_image::picker::{Picker, ProtocolType};
 use std::time::Duration;

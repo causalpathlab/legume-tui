@@ -94,14 +94,11 @@ pub mod form;
 pub mod gallery;
 #[cfg(feature = "graphics")]
 pub mod graphics;
+#[cfg(feature = "hist")]
+pub mod hist;
+pub mod keys;
 #[cfg(feature = "logs")]
 pub mod logs;
-#[cfg(any(
-    feature = "save",
-    feature = "gallery",
-    feature = "form",
-    feature = "browse"
-))]
 pub mod look;
 #[cfg(feature = "style")]
 pub mod map;
@@ -109,9 +106,17 @@ pub mod map;
 pub mod save;
 #[cfg(all(feature = "testing", sessions))]
 pub mod testing;
+pub mod text;
+#[cfg(feature = "view")]
+pub mod view;
+#[cfg(feature = "widgets")]
+pub mod widgets;
+#[cfg(feature = "work")]
+pub mod work;
 
 #[cfg(sessions)]
 pub use dir::{runtime_dir, Listed};
+pub use look::Look;
 pub use mode::{hosts_by_default, Bypass};
 pub use screen::{Keyboard, Modes, Mouse};
 #[cfg(sessions)]
@@ -240,6 +245,20 @@ pub const RUN_KEY: &str = "ctrl+r";
 pub fn is_run_key(k: &ratatui::crossterm::event::KeyEvent) -> bool {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     matches!(k.code, KeyCode::Char('r' | 'R')) && k.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+/// The run key as a button sends it: ctrl+r.
+#[must_use]
+pub fn run_key_event() -> ratatui::crossterm::event::KeyEvent {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
+}
+
+/// What a screen says when Enter (plain, or held with Shift, Alt or Ctrl)
+/// did nothing: that [`RUN_KEY`] `does` it.
+#[must_use]
+pub fn enter_hint(does: &str) -> String {
+    format!("Enter does nothing here; {RUN_KEY} {does}")
 }
 
 /// A session of this process offers the detach and switch keys
@@ -1339,6 +1358,12 @@ impl Session {
         // a stop before the first poll wakes that poll.
         let _ = event::poll(Duration::ZERO);
         Ok(t)
+    }
+
+    /// The modes the screen has on, or will as it comes up.
+    #[cfg(feature = "view")]
+    pub(crate) fn modes(&self) -> Modes {
+        *lock(&self.inner.modes)
     }
 
     /// Change the modes the screen has on.

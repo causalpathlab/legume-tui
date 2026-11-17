@@ -486,3 +486,40 @@ fn suffixes_built_at_run_time_are_taken_as_they_are() {
         format!("{stem}-2")
     );
 }
+
+#[test]
+fn a_free_file_is_numbered_before_its_extension() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert_eq!(next_free_file(dir, "fit", ".json"), dir.join("fit.json"));
+    std::fs::write(dir.join("fit.json"), "").unwrap();
+    std::fs::write(dir.join("fit2.json"), "").unwrap();
+    assert_eq!(next_free_file(dir, "fit", ".json"), dir.join("fit3.json"));
+    assert_eq!(next_free(dir, "fit"), dir.join("fit"));
+    std::fs::create_dir(dir.join("fit")).unwrap();
+    assert_eq!(next_free(dir, "fit"), dir.join("fit2"));
+    let stem = dir.join("fit").to_string_lossy().into_owned();
+    assert_eq!(
+        free_stem(&stem, &[".json"], Numbering::Joined),
+        format!("{stem}3")
+    );
+    assert_eq!(
+        free_stem(&stem, &[".json"], Numbering::Suffix),
+        format!("{stem}-2")
+    );
+}
+
+#[test]
+fn an_output_folder_must_be_named_and_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_string_lossy().into_owned();
+    assert_eq!(output_problem("").as_deref(), Some("name a directory"));
+    assert_eq!(output_problem(&dir), None);
+    assert_eq!(output_problem(&format!("{dir}/new")), None);
+    std::fs::write(tmp.path().join("f"), "").unwrap();
+    assert!(output_problem(&dir)
+        .unwrap()
+        .contains("already contains files"));
+    let f = format!("{dir}/f");
+    assert_eq!(output_problem(&f), Some(format!("{f} is a file")));
+}
