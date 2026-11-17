@@ -234,6 +234,11 @@ pub fn switch_key() -> String {
 /// ([`Session::offers_keys`]).
 static KEYS_OFFERED: AtomicBool = AtomicBool::new(false);
 
+/// The words that return to a session after the program's name, as the
+/// tool that opened this process's session names them
+/// ([`Tool::session_command`]); `attach` until one does.
+static ATTACH_COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// A key a help screen lists ([`help_keys`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -259,8 +264,9 @@ pub fn help_keys() -> Vec<HelpKey> {
             short: "detach".into(),
             long: format!(
                 "detach: leave it running (named on the first detach); \
-                 `{} attach` (or starting it again) returns",
-                exe_name()
+                 `{} {}` (or starting it again) returns",
+                exe_name(),
+                ATTACH_COMMAND.get().map_or("attach", String::as_str)
             ),
         },
         HelpKey {
@@ -312,16 +318,65 @@ pub fn serve_if_host() {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tool {
     name: &'static str,
+    /// The subcommand the session commands sit under (`session`, for
+    /// `<tool> session attach`); `None` when they are the tool's own
+    /// (`<tool> attach`).
+    session_verb: Option<&'static str>,
+}
+
+/// The commands a tool manages its sessions with ([`cli`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionCommand {
+    Attach,
+    /// `sessions` at the top, `list` under a verb (`<tool> session list`).
+    List,
+    Kill,
+    Rename,
 }
 
 impl Tool {
     pub const fn new(name: &'static str) -> Self {
-        Self { name }
+        Self {
+            name,
+            session_verb: None,
+        }
+    }
+
+    /// The tool with its session commands under the subcommand `verb`:
+    /// every hint and help text then names them as `{tool} {verb} attach`,
+    /// `list`, `kill` and `rename`.
+    pub const fn with_session_verb(self, verb: &'static str) -> Self {
+        Self {
+            session_verb: Some(verb),
+            ..self
+        }
     }
 
     /// The tool's name, as its sessions' ids start.
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// The words of session command `c` after the program's name:
+    /// `attach`, or `session attach` under a verb.
+    pub fn session_command(&self, c: SessionCommand) -> String {
+        let word = match (c, self.session_verb) {
+            (SessionCommand::Attach, _) => "attach",
+            (SessionCommand::List, None) => "sessions",
+            (SessionCommand::List, Some(_)) => "list",
+            (SessionCommand::Kill, _) => "kill",
+            (SessionCommand::Rename, _) => "rename",
+        };
+        match self.session_verb {
+            Some(verb) => format!("{verb} {word}"),
+            None => word.to_string(),
+        }
+    }
+
+    /// Session command `c` as the tool's user types it: `<tool> attach`, or
+    /// `<tool> session list` under a verb.
+    pub fn typed(&self, c: SessionCommand) -> String {
+        format!("{} {}", self.name, self.session_command(c))
     }
 
     /// What every id of the tool's sessions starts with.
@@ -364,6 +419,7 @@ impl Tool {
     /// ([`Session::leave`]) is said, once.
     #[cfg(sessions)]
     pub fn session(&self, screen: &str, opts: &Options) -> io::Result<Session> {
+        let _ = ATTACH_COMMAND.set(self.session_command(SessionCommand::Attach));
         serve_if_host();
         let session = match mode::mode(opts, &mode::Env::read()) {
             mode::Mode::Hosted => match control() {
@@ -415,9 +471,10 @@ impl Tool {
             let detached: Vec<_> = live.iter().filter(|l| !l.attached).collect();
             if !detached.is_empty() {
                 eprintln!(
-                    "[detached: {}; `{} attach NAME` to return]",
+                    "[detached: {}; `{} {} NAME` to return]",
                     dir::names(detached),
-                    exe_name()
+                    exe_name(),
+                    self.session_command(SessionCommand::Attach)
                 );
             }
             return None;

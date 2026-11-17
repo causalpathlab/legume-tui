@@ -19,13 +19,22 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// The demo example, built alongside the tests.
+/// The demo example, built alongside the tests: in the `examples` folder of
+/// the profile directory above the test binary, however deep cargo puts the
+/// binary under it (`target/debug/deps/`, or a build directory's
+/// `target/debug/build/<crate>/<hash>/deps/`).
 fn demo() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
-    let debug = exe.parent().unwrap().parent().unwrap();
-    let demo = debug.join("examples").join("demo");
-    assert!(demo.exists(), "build the example first: {}", demo.display());
-    demo
+    let name = format!("demo{}", std::env::consts::EXE_SUFFIX);
+    exe.ancestors()
+        .map(|dir| dir.join("examples").join(&name))
+        .find(|demo| demo.exists())
+        .unwrap_or_else(|| {
+            panic!(
+                "build the example first: no examples/{name} above {}",
+                exe.display()
+            )
+        })
 }
 
 /// A private directory for the demo's sessions.

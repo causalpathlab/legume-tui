@@ -601,8 +601,9 @@ fn report(dir: &Path, tool: &Tool, id: &str, outcome: &Outcome) -> i32 {
             match label {
                 Some(label) => eprintln!("detached: {label}"),
                 None => eprintln!(
-                    "[detached from {id}; `{} attach {id}` to return]",
-                    crate::exe_name()
+                    "[detached from {id}; `{} {} {id}` to return]",
+                    crate::exe_name(),
+                    tool.session_command(crate::SessionCommand::Attach)
                 ),
             }
             0

@@ -110,3 +110,48 @@ fn without_sessions_the_subcommands_say_so() {
     assert!(unsupported(kill(&TOOL, &KillArgs::default())));
     assert!(unsupported(rename(&TOOL, &RenameArgs::default())));
 }
+
+/// A tool whose session commands sit under a verb names them so in every
+/// help text; one without names them as before.
+#[test]
+fn session_commands_under_a_verb_are_named_with_it() {
+    use crate::SessionCommand::{Attach, Kill, List, Rename};
+    let plain = Tool::new("t");
+    let nested = Tool::new("t").with_session_verb("session");
+    assert_eq!(plain.typed(Attach), "t attach");
+    assert_eq!(plain.typed(List), "t sessions");
+    assert_eq!(nested.typed(Attach), "t session attach");
+    assert_eq!(nested.typed(List), "t session list");
+    assert_eq!(nested.session_command(Kill), "session kill");
+    assert_eq!(nested.session_command(Rename), "session rename");
+
+    let said = flat(&session_help(&nested, SessionHelp::new()));
+    assert!(
+        said.contains(
+            "`t session attach`, `session list`, `session kill` and `session rename` manage them"
+        ),
+        "{said}"
+    );
+    let about = about(&nested, "ctrl+c in it");
+    assert!(
+        flat(&about.attach).contains("`t session list` lists them"),
+        "{}",
+        about.attach
+    );
+    assert!(
+        flat(&about.attach).contains("`t session rename` or `r`"),
+        "{}",
+        about.attach
+    );
+    assert!(
+        flat(&about.rename).contains("`session list` shows it"),
+        "{}",
+        about.rename
+    );
+    // the plain tool's text is as it was
+    let plain_said = flat(&session_help(&plain, SessionHelp::new()));
+    assert!(
+        plain_said.contains("`t attach`, `sessions`, `kill` and `rename` manage them"),
+        "{plain_said}"
+    );
+}

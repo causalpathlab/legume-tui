@@ -161,16 +161,22 @@ impl<'a> SessionHelp<'a> {
 /// detach and switch keys, how to return, the subcommands, and how to run
 /// it plain.
 pub fn session_help(tool: &Tool, help: SessionHelp<'_>) -> String {
-    let name = tool.name();
+    use crate::SessionCommand::{Attach, Kill, List, Rename};
+    let attach = tool.typed(Attach);
+    let (list, kill, rename) = (
+        tool.session_command(List),
+        tool.session_command(Kill),
+        tool.session_command(Rename),
+    );
     let resume = match help.resume_hint {
         Some(hint) => format!(
-            "{hint} offers the live sessions to return to; `{name} attach`, \
-             `sessions`, `kill` and `rename` manage them."
+            "{hint} offers the live sessions to return to; `{attach}`, \
+             `{list}`, `{kill}` and `{rename}` manage them."
         ),
         None => format!(
             "Starting it again starts a new session, naming the detached \
-             ones; `{name} attach` offers them to return to, and `sessions`, \
-             `kill` and `rename` manage them."
+             ones; `{attach}` offers them to return to, and `{list}`, \
+             `{kill}` and `{rename}` manage them."
         ),
     };
     let mut text = help.lead.map_or(String::new(), |lead| format!("{lead} "));
@@ -245,6 +251,14 @@ pub const QUIT_KEY: &str = "its quit key";
 /// The long help of `tool`'s `attach`, `sessions`, `kill` and `rename`;
 /// `kill` stops a session as `quit` does ([`QUIT_KEY`], or `ctrl+c in it`).
 pub fn about(tool: &Tool, quit: &str) -> About {
+    use crate::SessionCommand::{Attach, Kill, List, Rename};
+    let (rename_typed, list_typed) = (tool.typed(Rename), tool.typed(List));
+    let (attach_word, kill_word, rename_word, list_word) = (
+        tool.session_command(Attach),
+        tool.session_command(Kill),
+        tool.session_command(Rename),
+        tool.session_command(List),
+    );
     let tool = tool.name();
     About {
         attach: format!(
@@ -254,10 +268,10 @@ Return to a detached `{tool}` session in this terminal.
 A session keeps running when the terminal goes (a dropped connection, or
 the detach key: ctrl+alt+d unless LEGUME_TUI_DETACH_KEY sets another) and
 is picked up again here, or by starting it again with nothing named. The
-first detach by the key asks for a label (Enter keeps the id); `{tool}
-rename` or `r` in the picker changes it later. A session is found by its
+first detach by the key asks for a label (Enter keeps the id);
+`{rename_typed}` or `r` in the picker changes it later. A session is found by its
 label or its id; with one live the name is optional, with several a
-picker opens. `{tool} sessions` lists them. Inside one, ctrl+alt+s (or
+picker opens. `{list_typed}` lists them. Inside one, ctrl+alt+s (or
 LEGUME_TUI_SWITCH_KEY) switches to another."
         ),
         sessions: format!(
@@ -278,8 +292,8 @@ sessions left (a summary, an error) follows, said once."
         rename: format!(
             "\
 Give a `{tool}` session a label, found by its label or its id. The label
-is unique among the live sessions; `attach`, `kill` and `rename` take it
-in place of the id, and `sessions` shows it."
+is unique among the live sessions; `{attach_word}`, `{kill_word}` and `{rename_word}` take it
+in place of the id, and `{list_word}` shows it."
         ),
     }
 }
@@ -421,9 +435,9 @@ pub fn kill(tool: &Tool, args: &KillArgs) -> io::Result<()> {
         }
         false if args.force => println!("{id}{label} was killed; its host has not closed yet"),
         false => {
-            let (name, handle) = (tool.name(), found.handle());
+            let (kill, handle) = (tool.typed(crate::SessionCommand::Kill), found.handle());
             println!(
-                "asked {id}{label} to stop; it is still wrapping up (`{name} kill --force {handle}` to end it now)"
+                "asked {id}{label} to stop; it is still wrapping up (`{kill} --force {handle}` to end it now)"
             );
         }
     }
