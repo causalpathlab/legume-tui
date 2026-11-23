@@ -43,6 +43,7 @@ use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU8, Ordering::SeqCst};
 use std::sync::Mutex;
+use std::time::Duration;
 
 /// Stops a run of child commands: the one running is interrupted, as
 /// Ctrl+C would, so a fit can wrap up; asked again it is killed. A child
@@ -260,14 +261,18 @@ pub enum Said {
     Cleared,
 }
 
-/// Where a progress bar stands: `pos` of `len` (0 for a spinner), and
-/// what it counts.
+/// Where a progress bar stands: `pos` of `len` (0 for a spinner), what it
+/// counts, and the times its frame drew: how long the bar has run (its
+/// `[hh:mm:ss]` head) and the time left (its `(eta)`), as indicatif counts
+/// them per bar.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Progress {
     pub pos: u64,
     pub len: u64,
     pub what: String,
+    pub elapsed: Option<Duration>,
+    pub eta: Option<Duration>,
 }
 
 impl Progress {
@@ -276,7 +281,16 @@ impl Progress {
             pos,
             len,
             what: what.into(),
+            ..Self::default()
         }
+    }
+
+    /// [`Self::new`] with the times a frame drew.
+    #[must_use]
+    pub fn timed(mut self, elapsed: Option<Duration>, eta: Option<Duration>) -> Self {
+        self.elapsed = elapsed;
+        self.eta = eta;
+        self
     }
 
     /// The score the bar's message carries: the first finite `key=number`
@@ -463,7 +477,7 @@ enum Shows {
 impl<F: FnMut(Said)> Words<'_, F> {
     /// One piece of the stream, ended by a `\r` or `\n`.
     fn piece(&mut self, piece: &[u8]) {
-        let (line, erases) = words_of(piece);
+        let (line, erases, elapsed) = words_of(piece);
         if line.is_empty() {
             // Terminal control alone: it may erase the line, or nothing.
             if erases && self.shows == Shows::Bar {
@@ -472,7 +486,8 @@ impl<F: FnMut(Said)> Words<'_, F> {
             return;
         }
         match progress_of(&line) {
-            Some(p) => {
+            Some(mut p) => {
+                p.elapsed = elapsed;
                 self.shows = Shows::Bar;
                 self.frame = Some(p.clone());
                 (self.each)(Said::Progress(p));
@@ -492,7 +507,7 @@ impl<F: FnMut(Said)> Words<'_, F> {
         if tail.len() > LINE_BYTES {
             return;
         }
-        let (line, erases) = words_of(tail);
+        let (line, erases, _) = words_of(tail);
         match (progress_of(&line), self.shows) {
             (Some(drawn), Shows::Gone) => {
                 // Its last frame, if this bar is that one: the frame drawn
@@ -513,11 +528,52 @@ impl<F: FnMut(Said)> Words<'_, F> {
     }
 }
 
-/// A piece of the stream's message, and whether its terminal control
-/// erases part of the screen.
-fn words_of(bytes: &[u8]) -> (String, bool) {
+/// A piece of the stream's message, whether its terminal control erases
+/// part of the screen, and the time its `[hh:mm:ss]` head says (a bar's
+/// frame has one; a log line's head is not a time).
+fn words_of(bytes: &[u8]) -> (String, bool, Option<Duration>) {
     let (text, erases) = plain(&String::from_utf8_lossy(bytes));
-    (message(&text), erases)
+    let elapsed = text
+        .trim_start()
+        .strip_prefix('[')
+        .and_then(|t| t.split_once(']'))
+        .and_then(|(head, _)| clock_of(head));
+    (message(&text), erases, elapsed)
+}
+
+/// `hh:mm:ss`, or `Nd hh:mm:ss`, as indicatif writes an elapsed time.
+fn clock_of(text: &str) -> Option<Duration> {
+    let (days, clock) = match text.split_once("d ") {
+        Some((d, c)) => (d.parse::<u64>().ok()?, c),
+        None => (0, text),
+    };
+    let mut parts = clock.split(':');
+    let mut secs = 0u64;
+    for _ in 0..3 {
+        secs = secs * 60 + parts.next()?.parse::<u64>().ok()?;
+    }
+    parts
+        .next()
+        .is_none()
+        .then(|| Duration::from_secs(days * 86_400 + secs))
+}
+
+/// A time left as indicatif writes it: `52s` or `7m`, or in words,
+/// `1 minute`, `3 hours`. Coarse: one unit, rounded.
+fn span_of(text: &str) -> Option<Duration> {
+    let text = text.trim();
+    let split = text.find(|c: char| !c.is_ascii_digit())?;
+    let n: u64 = text[..split].parse().ok()?;
+    let unit = match text[split..].trim_start().chars().next()? {
+        's' => 1,
+        'm' => 60,
+        'h' => 3_600,
+        'd' => 86_400,
+        'w' => 7 * 86_400,
+        'y' => 365 * 86_400,
+        _ => return None,
+    };
+    Some(Duration::from_secs(n * unit))
 }
 
 /// Read a child's log to the end a line at a time, every line to `each`;
@@ -549,14 +605,18 @@ pub fn progress_of(line: &str) -> Option<Progress> {
     let (count, rest) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
     let (pos, len) = count.split_once('/')?;
     let what = rest.trim_start();
-    let what = match what.strip_prefix('(') {
-        Some(w) => w.split_once(')').map_or("", |(_, after)| after),
-        None => what,
+    let (eta, what) = match what.strip_prefix('(') {
+        Some(w) => w
+            .split_once(')')
+            .map_or((None, ""), |(eta, after)| (span_of(eta), after)),
+        None => (None, what),
     };
     Some(Progress {
         pos: pos.parse().ok()?,
         len: len.parse().ok()?,
         what: what.trim().to_string(),
+        eta,
+        ..Progress::default()
     })
 }
 
