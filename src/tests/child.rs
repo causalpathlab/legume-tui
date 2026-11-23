@@ -24,17 +24,14 @@ fn log_lines_lose_their_lead_colours_and_redraws() {
 fn bar_frames_are_progress_and_the_rest_is_log() {
     assert_eq!(
         progress_of("#####----- 3/10 (2s) GENE1 blocks"),
-        Some(Progress {
-            pos: 3,
-            len: 10,
-            what: "GENE1 blocks".into()
-        })
+        Some(Progress::new(3, 10, "GENE1 blocks").timed(None, Some(Duration::from_secs(2))))
     );
+    let sweeps = progress_of("---------- 0/140 (1 minute) sweeps").unwrap();
+    assert_eq!(sweeps.what, "sweeps");
+    assert_eq!(sweeps.eta, Some(Duration::from_secs(60)));
     assert_eq!(
-        progress_of("---------- 0/140 (1 minute) sweeps")
-            .unwrap()
-            .what,
-        "sweeps"
+        progress_of("#--- 1/4 (7m) fit").unwrap().eta,
+        Some(Duration::from_secs(420))
     );
     assert_eq!(progress_of("⠁ streamed 12 fragments").unwrap().len, 0);
     assert_eq!(progress_of("Selected 300 / 300 features"), None);
@@ -47,22 +44,31 @@ fn bar_frames_are_progress_and_the_rest_is_log() {
     let mut said = Vec::new();
     let last = follow(Some(raw.as_bytes()), |s| said.push(s));
     assert_eq!(last, "done");
-    let epochs = |pos| {
-        Said::Progress(Progress {
-            pos,
-            len: 2,
-            what: "epochs".into(),
-        })
+    // Each frame's `[hh:mm:ss]` head is how long the bar has run, its
+    // `(…)` the time left.
+    let epochs = |pos, left| {
+        let secs = Duration::from_secs;
+        Said::Progress(Progress::new(pos, 2, "epochs").timed(Some(secs(pos)), Some(secs(left))))
     };
     assert_eq!(
         said,
         [
             Said::Line("start".into()),
-            epochs(1),
-            epochs(2),
+            epochs(1, 1),
+            epochs(2, 0),
             Said::Line("done".into()),
         ]
     );
+
+    // A day and more: indicatif writes the days before the clock.
+    let long = "[1d 02:03:04] ##-- 1/2 (5h) epochs\n";
+    let mut said = Vec::new();
+    follow(Some(long.as_bytes()), |s| said.push(s));
+    let Some(Said::Progress(p)) = said.first() else {
+        panic!("a frame: {said:?}");
+    };
+    assert_eq!(p.elapsed, Some(Duration::from_secs(86_400 + 7_384)));
+    assert_eq!(p.eta, Some(Duration::from_secs(5 * 3_600)));
 }
 
 #[test]
@@ -103,11 +109,10 @@ fn a_child_runs_on_a_terminal_so_its_bars_draw() {
     assert_eq!(
         said,
         [
-            Said::Progress(Progress {
-                pos: 1,
-                len: 4,
-                what: "steps".into()
-            }),
+            Said::Progress(
+                Progress::new(1, 4, "steps")
+                    .timed(Some(Duration::ZERO), Some(Duration::from_secs(3)))
+            ),
             Said::Line("ok".into()),
         ]
     );
