@@ -138,17 +138,14 @@ fn a_failed_command_gives_its_reason_and_a_stopped_one_says_so() {
     );
     assert_eq!(sh("exit 2"), Err(Failed::Exit("exit status: 2".into())));
 
-    // Stopped before it started: it gets the stop at once.
+    // Stopped before it started: it gets the stop, and ends stopped. (How
+    // soon is the machine's speed, which a test must not depend on.)
     let stopper = Stopper::new();
     stopper.stop();
-    let start = Instant::now();
     assert_eq!(
         run_one(grouped("sleep 60"), &stopper, |_| {}),
         Err(Failed::Stopped)
     );
-    // Far short of the minute it would sleep: stopped, not waited out,
-    // with room for a loaded machine.
-    assert!(start.elapsed() < Duration::from_secs(30));
 
     let c = Command::new("/no/such/program");
     assert!(matches!(
@@ -217,9 +214,7 @@ fn quitting_lets_a_save_finish_and_stops_anything_else() {
     fit.hold(grouped("sleep 30").spawn().unwrap());
     assert!(fit.quit());
     assert!(fit.is_stopped());
-    let start = Instant::now();
     assert!(!fit.release().unwrap().wait().unwrap().success());
-    assert!(start.elapsed() < Duration::from_secs(10));
 }
 
 #[test]

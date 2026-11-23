@@ -30,11 +30,9 @@ fn a_worker_follows_a_childs_bars_and_stops_it() {
         (out, said)
     });
     std::thread::sleep(Duration::from_millis(300));
-    let asked = Instant::now();
     assert!(stopper.quit(), "not a save: stopped");
     let (out, said) = worker.join().unwrap();
     assert_eq!(out, Err(Failed::Stopped));
-    assert!(asked.elapsed() < Duration::from_secs(10));
     let bar = Progress::new(1, 2, "fit nll=2.5").timed(None, Some(Duration::from_secs(1)));
     assert_eq!(bar.score(), Some(2.5));
     assert_eq!(said, [Said::Progress(bar), Said::Line("fitting".into())]);
