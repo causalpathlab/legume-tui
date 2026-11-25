@@ -85,8 +85,10 @@ pub struct Panel {
 
 /// Where a panel's map and key go, in pixels `[x0, y0, x1, y1]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Areas {
     pub map: Rect,
+    /// The key's box, `None` without a key or room for one.
     pub key: Option<Rect>,
     /// How many of the key's entries it has room for.
     pub shown: usize,
@@ -199,7 +201,7 @@ impl Panel {
     }
 
     /// The labels' size in points: as asked, else 4 points to the inch of
-    /// the panel's shorter side, between 5 and 8 (7 on a 1.8 inch panel).
+    /// the panel's shorter side, between 5 and 8 (7.2 on a 1.8 inch panel).
     #[must_use]
     pub fn font_pt(&self) -> f32 {
         self.font_pt
@@ -250,21 +252,28 @@ impl Panel {
     }
 
     /// A key's rows and columns, line height and column width in pixels,
-    /// for `entries` in a column at most `max_h` pixels tall.
-    fn key_grid(&self, entries: &[KeyEntry], max_h: f32) -> (usize, usize, f32, f32) {
+    /// for `entries` in a box at most `max_h` pixels tall and `max_w` wide
+    /// (with its half-line margin): as few rows as the columns allow, and
+    /// with too few columns, every row there is room for. No columns when
+    /// not even one fits.
+    fn key_grid(&self, entries: &[KeyEntry], max_h: f32, max_w: f32) -> (usize, usize, f32, f32) {
         let font = self.fonts().0;
         let lh = font.line_height() as f32;
         let widest = entries.iter().map(|(n, ..)| font.width(n)).max();
         let col_w = lh * 1.5 + widest.unwrap_or(0) as f32;
         let fit = (((max_h - lh) / lh + 1e-3).floor() as usize).max(1);
-        let cols = entries.len().div_ceil(fit).max(1);
-        (entries.len().div_ceil(cols), cols, lh, col_w)
+        let room = ((max_w - 0.5 * lh) / col_w).floor().max(0.0) as usize;
+        let cols = entries.len().div_ceil(fit).max(1).min(room);
+        let rows = entries.len().div_ceil(cols.max(1)).min(fit);
+        (rows, cols, lh, col_w)
     }
 
     /// Where the map and its key go in a `(w, h)` pixel panel: the whole
     /// panel for the map, or, with [`Labels::Legend`], `entries` in as
     /// many columns as the height needs at the right, at most half the
-    /// width, and the map in what is left.
+    /// width, and the map in what is left. Names too long for a column in
+    /// half the width go under the map instead, in rows across it, at
+    /// most half the height; names too long for the panel's width, nowhere.
     #[must_use]
     pub fn areas(&self, entries: &[KeyEntry], (w, h): (usize, usize)) -> Areas {
         let (w, h) = (w as f32, h as f32);
@@ -276,16 +285,30 @@ impl Panel {
         if self.labels != Labels::Legend || entries.is_empty() {
             return whole;
         }
-        let (rows, cols, lh, col_w) = self.key_grid(entries, h);
-        let cols_fit = ((0.5 * w - 0.5 * lh) / col_w).floor().max(1.0) as usize;
-        let cols = cols.min(cols_fit);
-        let key_w = cols as f32 * col_w + 0.5 * lh;
-        let x0 = w - key_w;
-        let key_h = rows as f32 * lh;
-        let y0 = (0.5 * (h - key_h)).max(0.0);
+        let (rows, cols, lh, col_w) = self.key_grid(entries, h, 0.5 * w);
+        if cols > 0 {
+            let x0 = w - (cols as f32 * col_w + 0.5 * lh);
+            let key_h = rows as f32 * lh;
+            let y0 = (0.5 * (h - key_h)).max(0.0);
+            return Areas {
+                map: [0.0, 0.0, x0, h],
+                key: Some([x0, y0, w, y0 + key_h]),
+                shown: (rows * cols).min(entries.len()),
+            };
+        }
+        // Under the map: as many columns as the width holds, then rows.
+        let room = ((w - 0.5 * lh) / col_w).floor().max(0.0) as usize;
+        if room == 0 {
+            return whole;
+        }
+        let cols = room.min(entries.len());
+        let fit = ((0.5 * h / lh).floor() as usize).max(1);
+        let rows = entries.len().div_ceil(cols).min(fit);
+        let (key_w, key_h) = (cols as f32 * col_w + 0.5 * lh, rows as f32 * lh);
+        let (x0, y0) = (0.5 * (w - key_w), h - key_h - 0.25 * lh);
         Areas {
-            map: [0.0, 0.0, x0, h],
-            key: Some([x0, y0, w, y0 + key_h]),
+            map: [0.0, 0.0, w, y0],
+            key: Some([x0, y0, x0 + key_w, y0 + key_h]),
             shown: (rows * cols).min(entries.len()),
         }
     }
@@ -332,7 +355,7 @@ impl Panel {
     pub fn draw_key(&self, frame: &mut Frame, entries: &[KeyEntry], area: Rect) {
         let font = self.fonts().0;
         let lh = font.line_height() as f32;
-        let (rows, _, lh, col_w) = self.key_grid(entries, area[3] - area[1] + lh);
+        let (rows, _, lh, col_w) = self.key_grid(entries, area[3] - area[1] + lh, f32::INFINITY);
         let bg = frame.background();
         let r = 0.28 * lh;
         for (k, (name, dot, ink)) in entries.iter().enumerate() {
@@ -366,7 +389,7 @@ impl Panel {
         if entries.is_empty() {
             return Err("no groups to name in a key".into());
         }
-        let (rows, cols, lh, col_w) = self.key_grid(entries, h as f32);
+        let (rows, cols, lh, col_w) = self.key_grid(entries, h as f32, f32::INFINITY);
         let w = (cols as f32 * col_w + 0.5 * lh).ceil() as usize;
         let key_h = rows as f32 * lh;
         let mut frame = Frame::blank(w, h, self.page_colour(page));
@@ -407,29 +430,22 @@ impl Panel {
     /// # Errors
     /// When the image cannot be encoded.
     pub fn png(&self, frame: &Frame) -> io::Result<Vec<u8>> {
-        use image::ImageEncoder;
         let img = frame.to_image();
-        let mut png = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut png)
-            .write_image(
-                img.as_raw(),
-                img.width(),
-                img.height(),
-                image::ExtendedColorType::Rgba8,
-            )
-            .map_err(io::Error::other)?;
-        // pHYs, pixels per metre both ways, right after the 33 bytes of
-        // the signature and the header.
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, img.width(), img.height());
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        // Pixels to the metre, both ways.
         let ppm = (self.dpi as f32 / 0.0254).round() as u32;
-        let mut chunk = b"pHYs".to_vec();
-        chunk.extend(ppm.to_be_bytes());
-        chunk.extend(ppm.to_be_bytes());
-        chunk.push(1);
-        let mut phys = 9u32.to_be_bytes().to_vec();
-        phys.extend(&chunk);
-        phys.extend(crc32(&chunk).to_be_bytes());
-        png.splice(33..33, phys);
-        Ok(png)
+        enc.set_pixel_dims(Some(png::PixelDimensions {
+            xppu: ppm,
+            yppu: ppm,
+            unit: png::Unit::Meter,
+        }));
+        enc.write_header()
+            .and_then(|mut w| w.write_image_data(img.as_raw()))
+            .map_err(io::Error::other)?;
+        Ok(out)
     }
 
     /// Write `pages` to `path` at the panel's resolution, in its face.
@@ -439,22 +455,6 @@ impl Panel {
     pub fn write_pdf(&self, pages: &[Page], path: &Path) -> io::Result<()> {
         write_pdf_in(pages, self.dpi as f32, self.face, path)
     }
-}
-
-/// The CRC-32 a PNG chunk ends with.
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut c = !0u32;
-    for &b in bytes {
-        c ^= u32::from(b);
-        for _ in 0..8 {
-            c = if c & 1 == 1 {
-                0xEDB8_8320 ^ (c >> 1)
-            } else {
-                c >> 1
-            };
-        }
-    }
-    !c
 }
 
 /// The flags of a figure panel, beside [`super::PdfArgs`]' `--pdf`,

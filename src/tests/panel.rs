@@ -58,3 +58,28 @@ fn no_background_is_transparent_and_the_key_stands_alone() {
     let back = image::load_from_memory(&png).unwrap().to_rgba8();
     assert_eq!(back.get_pixel(back.width() - 1, 0)[3], 0);
 }
+
+#[test]
+fn a_key_too_long_fills_its_rows_and_one_too_wide_goes_under_the_map() {
+    let p = Panel::new(1.8, 1.8).with_labels(Labels::Legend);
+    let many: Vec<KeyEntry> = (0..40)
+        .map(|k| (format!("Cluster{k}"), [0.2, 0.4, 0.8], [0.0; 3]))
+        .collect();
+    let a = p.areas(&many, (540, 540));
+    let key = a.key.unwrap();
+    // One column fits in half the width: every row of it is used.
+    let rows = ((key[3] - key[1]) / p.fonts().0.line_height() as f32).round() as usize;
+    assert!(a.shown == rows && rows > 10, "{a:?}");
+    // Names too long for half the width go under the map, across it.
+    let long: Vec<KeyEntry> = ["Early_Erythroid", "Megakaryocyte_Precursor", "HSC_MPP"]
+        .map(|n| (n.to_string(), [0.2, 0.4, 0.8], [0.0; 3]))
+        .to_vec();
+    let a = p.areas(&long, (540, 540));
+    let key = a.key.unwrap();
+    assert_eq!((a.map[2], a.map[3], a.shown), (540.0, key[1], 3));
+    assert!(key[0] >= 0.0 && key[2] <= 540.0 && key[3] <= 540.0, "{a:?}");
+    // On a panel too narrow for even that, the map keeps the whole panel.
+    let tiny = Panel::new(0.3, 0.3).with_labels(Labels::Legend);
+    let a = tiny.areas(&long, tiny.check().unwrap());
+    assert_eq!((a.key, a.shown, a.map[2]), (None, 0, 90.0));
+}

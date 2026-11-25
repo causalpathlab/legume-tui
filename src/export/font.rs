@@ -17,6 +17,7 @@ use pdf_writer::{Finish, Name, Pdf, Rect, Ref};
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "map", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "map", serde(rename_all = "lowercase"))]
+#[non_exhaustive]
 pub enum Face {
     #[default]
     Helvetica,
