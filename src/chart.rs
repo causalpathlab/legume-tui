@@ -1,7 +1,8 @@
 //! Charts the map viewers draw in place of a map, into the same [`Frame`]:
 //! a structure plot of each row's mixture as stacked bars, in panels by
-//! group ([`structure`]), and a heatmap of the features that lead each
-//! group by the widest margin ([`heatmap`]). Both keep their text as text
+//! group ([`structure`]), a heatmap of the features that lead each group by
+//! the widest margin ([`heatmap`]), and a scatter plot of points by series
+//! ([`scatter`]), a volcano among them. Both keep their text as text
 //! when the frame does, for a vector page.
 //!
 //! Ported from senna (`src/view/chart.rs`) and pinto
@@ -11,6 +12,7 @@
 //! heatmap shows.
 
 pub mod heatmap;
+pub mod scatter;
 pub mod structure;
 
 use crate::map::colour::to_linear;
