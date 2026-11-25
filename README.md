@@ -112,6 +112,8 @@ legume-tui = "0.5"
   `b"\x1b\x13"`; in CSI-u they are `\x1b[93;5u` and `\x1b[92;5u`.
   `testing::Private` runs the tool with neither variable set, so the
   defaults hold whatever the shell the tests run in sets.
+- `testing::Term::cooked` wants the signal keys and echo on as well as
+  line mode, so a test sees a switch that left them off.
 - Tools: depend on `"0.5"`; a help screen or README that spells the old
   keys takes `detach_key()` / `switch_key()` or the new spelling.
 

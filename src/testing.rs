@@ -644,13 +644,15 @@ impl Term {
         self.status().code().unwrap_or(-1)
     }
 
-    /// Whether the terminal is back in its line mode. Read through our
-    /// end, which shares the mode with the tool's: macOS revokes the
-    /// tool's end, our handle on it too, once the tool (its session
-    /// leader) has ended.
+    /// Whether the terminal is back in its line mode, its signal keys
+    /// and echo on. Read through our end, which shares the mode with the
+    /// tool's: macOS revokes the tool's end, our handle on it too, once
+    /// the tool (its session leader) has ended.
     pub fn cooked(&self) -> bool {
+        use rustix::termios::LocalModes;
         let t = rustix::termios::tcgetattr(&self.master).unwrap();
-        t.local_modes.contains(rustix::termios::LocalModes::ICANON)
+        t.local_modes
+            .contains(LocalModes::ICANON | LocalModes::ISIG | LocalModes::ECHO)
     }
 }
 
