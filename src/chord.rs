@@ -13,6 +13,9 @@
 //! the same sequences with modifier 7. In the plain encoding a terminal
 //! sends the same bytes for Ctrl+5 and Ctrl+4 (crossterm reads 0x1c to
 //! 0x1f as Ctrl+4 to Ctrl+7), so those keys detach and switch too.
+//! Neither is looked for inside a bracketed paste (a program that asked
+//! for one gets its text between `ESC [ 200 ~` and `ESC [ 201 ~`): a
+//! pasted 0x1d is the program's, and the paste reaches it whole.
 //!
 //! The client keeps the terminal raw while it reads it (and its signal
 //! keys off on the way to the switch key's picker), so Ctrl+\ is a byte
@@ -25,6 +28,10 @@
 const ESC: u8 = 0x1b;
 /// The longest escape sequence held back while it might yet be the key.
 const HOLD: usize = 32;
+/// What a terminal sends around a paste, once a program has asked for
+/// bracketed paste: what comes between is text, never a key.
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// A key the client keeps: Ctrl, Alt or not, and a character that has a
 /// control byte (a letter, or one of `@ \ ] ^ _`).
@@ -155,8 +162,9 @@ enum Hit {
     Other,
 }
 
-/// Finds the detach and switch keys in the input stream. A sequence split
-/// between two reads is held until the rest arrives, or until
+/// Finds the detach and switch keys in the input stream, but not in a
+/// bracketed paste: a pasted control byte is the program's. A sequence
+/// split between two reads is held until the rest arrives, or until
 /// [`Chord::flush`] gives up on it (a lone Esc key press looks like the
 /// start of one).
 #[derive(Debug)]
@@ -164,6 +172,8 @@ pub(crate) struct Chord {
     /// The detach key first: it wins if both are the same.
     keys: [(Key, Action); 2],
     held: Vec<u8>,
+    /// Inside a bracketed paste, until its end.
+    pasting: bool,
 }
 
 impl Chord {
@@ -171,6 +181,7 @@ impl Chord {
         Self {
             keys: [(detach, Action::Detach), (switch, Action::Switch)],
             held: Vec::new(),
+            pasting: false,
         }
     }
 
@@ -182,6 +193,25 @@ impl Chord {
         let mut out = Vec::with_capacity(buf.len());
         let mut i = 0;
         while i < buf.len() {
+            if self.pasting {
+                let rest = &buf[i..];
+                if let Some(at) = rest.windows(PASTE_END.len()).position(|w| w == PASTE_END) {
+                    let end = at + PASTE_END.len();
+                    out.extend_from_slice(&rest[..end]);
+                    i += end;
+                    self.pasting = false;
+                    continue;
+                }
+                // All of it, but for what may be the start of the end.
+                let keep = (1..PASTE_END.len())
+                    .rev()
+                    .find(|&n| rest.ends_with(&PASTE_END[..n]))
+                    .unwrap_or(0);
+                let (text, tail) = rest.split_at(rest.len() - keep);
+                out.extend_from_slice(text);
+                self.held = tail.to_vec();
+                break;
+            }
             let plain = self.keys.iter().find(|(k, _)| !k.alt && k.byte() == buf[i]);
             if let Some(&(_, action)) = plain {
                 return (out, Some(action));
@@ -195,7 +225,9 @@ impl Chord {
                     Seq::Done(_, Hit::Key(action)) => return (out, Some(action)),
                     Seq::Done(len, Hit::Release) => i += len,
                     Seq::Done(len, Hit::Other) => {
-                        out.extend_from_slice(&buf[i..i + len]);
+                        let seq = &buf[i..i + len];
+                        self.pasting = seq == PASTE_START;
+                        out.extend_from_slice(seq);
                         i += len;
                     }
                     Seq::Not => {

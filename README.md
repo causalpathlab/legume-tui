@@ -99,6 +99,8 @@ legume-tui = "0.5"
   and some Linux desktops (Xfce, some GNOME) take Ctrl+Alt+letter for
   themselves. `LEGUME_TUI_DETACH_KEY` and `LEGUME_TUI_SWITCH_KEY` still
   set others, the old ones too (`ctrl+alt+d`, `ctrl+alt+s`).
+- Neither key is looked for inside a bracketed paste: a pasted control
+  byte is the program's, and the paste is not cut short.
 - `detach_key()`, `switch_key()` and `help_keys()` spell keys in lower
   case: `ctrl+]`, `ctrl+\`, `ctrl+alt+k`; the session paragraph and
   `attach` help (`cli`) name the keys in effect.
@@ -310,7 +312,9 @@ itself: Ctrl+], in the plain encoding (its control byte, 0x1d) and in
 the extended ones (CSI-u as kitty's keyboard protocol sends it,
 `ESC [ 93 ; 5 u`, its repeat too and its release swallowed; xterm's
 modifyOtherKeys, `ESC [ 27 ; 5 ; 93 ~`). In the plain encoding Ctrl+5
-sends the same byte, so it detaches too. `LEGUME_TUI_DETACH_KEY` names
+sends the same byte, so it detaches too. Inside a bracketed paste
+neither key is looked for: the paste reaches the program whole.
+`LEGUME_TUI_DETACH_KEY` names
 another (`ctrl+alt+d`, `ctrl+^`): Ctrl, Alt or not, and a letter or one
 of `@ \ ] ^ _`; with Alt, on macOS, Option must be set to send Meta.
 `legume_tui::detach_key()` gives the active key for a help screen, and

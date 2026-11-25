@@ -200,3 +200,27 @@ fn another_switch_key_and_the_detach_key_winning_a_tie() {
     assert_eq!(same.feed(b"\x1c").1, Some(Detach));
     assert_eq!(same.feed(b"\x1b[92;5u").1, Some(Detach));
 }
+
+#[test]
+fn a_pasted_key_is_the_programs() {
+    let paste = b"\x1b[200~a\x1db\x1cc\x1b[93;5u\x1b[201~".to_vec();
+    assert_eq!(feed(&paste), (paste.clone(), None));
+    // After the paste, the key is ours again.
+    let mut c = Chord::new(Key::DETACH, Key::SWITCH);
+    let mut then = paste.clone();
+    then.extend_from_slice(b"x\x1dy");
+    let mut passed = paste;
+    passed.push(b'x');
+    assert_eq!(c.feed(&then), (passed, Some(Detach)));
+    // A paste over several reads, its end split between two.
+    let mut c = Chord::new(Key::DETACH, Key::SWITCH);
+    assert_eq!(c.feed(b"\x1b[200~a"), (b"\x1b[200~a".to_vec(), None));
+    assert_eq!(c.feed(b"\x1d\x1b[20"), (b"\x1d".to_vec(), None));
+    assert!(c.holding());
+    assert_eq!(c.feed(b"1~\x1d"), (b"\x1b[201~".to_vec(), Some(Detach)));
+    // An end begun but not finished is pasted text, given up on in time.
+    let mut c = Chord::new(Key::DETACH, Key::SWITCH);
+    assert_eq!(c.feed(b"\x1b[200~\x1b"), (b"\x1b[200~".to_vec(), None));
+    assert_eq!(c.flush(), b"\x1b");
+    assert_eq!(c.feed(b"\x1d"), (b"\x1d".to_vec(), None));
+}
