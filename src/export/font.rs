@@ -1,7 +1,83 @@
-//! The standard font a page's text is set in: Helvetica, which every PDF
-//! reader has, in its WinAnsi encoding, with its advance widths.
+//! The font a page's text is set in: Helvetica, which every PDF reader
+//! has, in its WinAnsi encoding, with its advance widths; or Arial, named
+//! for the reader to find, with the same widths (Arial's are Helvetica's).
 //!
-//! Ported from senna (`src/view/pdf.rs`), unchanged.
+//! Ported from senna (`src/view/pdf.rs`), unchanged; [`Face::Arial`] is
+//! new.
+
+use pdf_writer::types::FontFlags;
+use pdf_writer::{Finish, Name, Pdf, Rect, Ref};
+
+/// The face a PDF's text is set in. Neither is embedded: Helvetica is one
+/// of the standard fonts every reader has; Arial is named (`ArialMT`,
+/// `Arial-BoldMT`) with Helvetica's widths, which are Arial's, so a reader
+/// or editor with Arial sets it in Arial and one without in a font of the
+/// same widths.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "map", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "map", serde(rename_all = "lowercase"))]
+pub enum Face {
+    #[default]
+    Helvetica,
+    Arial,
+}
+
+/// The regular and bold fonts of `face` as objects `fonts`, with
+/// descriptors at `descriptors` for a face that needs them.
+pub(crate) fn write_fonts(pdf: &mut Pdf, face: Face, fonts: [Ref; 2], descriptors: [Ref; 2]) {
+    if face == Face::Helvetica {
+        for (id, name) in fonts
+            .into_iter()
+            .zip([&b"Helvetica"[..], b"Helvetica-Bold"])
+        {
+            pdf.type1_font(id)
+                .base_font(Name(name))
+                .encoding_predefined(Name(b"WinAnsiEncoding"));
+        }
+        return;
+    }
+    // Arial's metrics, from its own tables, in thousandths of the size.
+    let arial = [
+        (
+            &b"ArialMT"[..],
+            false,
+            [-665.0, -325.0, 2000.0, 1006.0],
+            88.0,
+        ),
+        (
+            b"Arial-BoldMT",
+            true,
+            [-628.0, -376.0, 2000.0, 1018.0],
+            165.0,
+        ),
+    ];
+    for ((id, desc), (name, bold, [x0, y0, x1, y1], stem)) in
+        fonts.into_iter().zip(descriptors).zip(arial)
+    {
+        let mut font = pdf.indirect(id).dict();
+        font.pair(Name(b"Type"), Name(b"Font"))
+            .pair(Name(b"Subtype"), Name(b"TrueType"))
+            .pair(Name(b"BaseFont"), Name(name))
+            .pair(Name(b"FirstChar"), 32)
+            .pair(Name(b"LastChar"), 255)
+            .pair(Name(b"Encoding"), Name(b"WinAnsiEncoding"))
+            .pair(Name(b"FontDescriptor"), desc);
+        font.insert(Name(b"Widths"))
+            .array()
+            .items((32..=255u8).map(|b| 1000.0 * helvetica_width(&[b], bold)));
+        font.finish();
+        pdf.font_descriptor(desc)
+            .name(Name(name))
+            .flags(FontFlags::NON_SYMBOLIC)
+            .bbox(Rect::new(x0, y0, x1, y1))
+            .italic_angle(0.0)
+            .ascent(905.0)
+            .descent(-212.0)
+            .cap_height(716.0)
+            .stem_v(stem);
+    }
+}
 
 /// `s` in WinAnsi, the standard fonts' encoding: ASCII and Latin-1 as they
 /// are, a few typographic marks moved, anything else a `?`.

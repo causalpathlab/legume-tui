@@ -4,7 +4,9 @@
 //! editable. A [`Frame`] drawn with [`Frame::keep_text`] gives both halves
 //! of a [`Page`]. [`PageSize`] is a page's width and resolution, the sizes
 //! a save offers, [`fits`] whether a page of so many pixels can be drawn
-//! and opened, and [`PdfArgs`] the flags that ask for one.
+//! and opened, and [`PdfArgs`] the flags that ask for one. A [`Panel`] is a
+//! map as a figure panel: an exact size, points and text in points, a white
+//! page or none, its text in Arial ([`Face`]).
 //!
 //! Ported from senna: [`write_pdf`] and [`Page`] from `src/view/pdf.rs`
 //! (its maths unchanged), [`font`] from the same file, [`shape`],
@@ -26,8 +28,13 @@ use std::io;
 use std::path::Path;
 
 pub mod font;
+pub mod panel;
 
+pub use font::Face;
 use font::{helvetica_width, win_ansi};
+#[cfg(feature = "clap")]
+pub use panel::PanelArgs;
+pub use panel::{Areas, Background, KeyEntry, Labels, Panel};
 
 /// One page: the raster, and the text to set over it (pixel coordinates).
 pub struct Page {
@@ -70,7 +77,7 @@ pub const MAX_PIXELS: usize = 80_000_000;
 
 /// Point size of text whose raster line is `line` pixels tall, and where its
 /// baseline sits below the top of that line, as fractions of it.
-const EM_PER_LINE: f32 = 0.74;
+pub(crate) const EM_PER_LINE: f32 = 0.74;
 const BASELINE: f32 = 0.78;
 
 /// Write `pages` to `path`, `dpi` raster pixels to the inch.
@@ -79,7 +86,15 @@ const BASELINE: f32 = 0.78;
 /// As [`pdf_bytes`], before the file is touched, or when it cannot be
 /// written.
 pub fn write_pdf(pages: &[Page], dpi: f32, path: &Path) -> io::Result<()> {
-    std::fs::write(path, pdf_bytes(pages, dpi)?)
+    write_pdf_in(pages, dpi, Face::Helvetica, path)
+}
+
+/// [`write_pdf`] with the text set in `face`.
+///
+/// # Errors
+/// As [`write_pdf`].
+pub fn write_pdf_in(pages: &[Page], dpi: f32, face: Face, path: &Path) -> io::Result<()> {
+    std::fs::write(path, pdf_bytes_in(pages, dpi, face)?)
 }
 
 /// `pages` as the bytes of a PDF, `dpi` raster pixels to the inch. Each
@@ -91,6 +106,16 @@ pub fn write_pdf(pages: &[Page], dpi: f32, path: &Path) -> io::Result<()> {
 /// number, which would size the page in infinities, or an empty page,
 /// which readers refuse as an image.
 pub fn pdf_bytes(pages: &[Page], dpi: f32) -> io::Result<Vec<u8>> {
+    pdf_bytes_in(pages, dpi, Face::Helvetica)
+}
+
+/// [`pdf_bytes`] with the text set in `face`. A raster with pixels that
+/// are not opaque ([`Frame::transparent`]) keeps them as a soft mask, so
+/// the page has no fill where nothing is drawn.
+///
+/// # Errors
+/// As [`pdf_bytes`].
+pub fn pdf_bytes_in(pages: &[Page], dpi: f32, face: Face) -> io::Result<Vec<u8>> {
     let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
     if !(dpi.is_finite() && dpi > 0.0) {
         return Err(invalid(format!("{dpi} dpi is not a resolution")));
@@ -102,35 +127,50 @@ pub fn pdf_bytes(pages: &[Page], dpi: f32) -> io::Result<Vec<u8>> {
         return Err(invalid(format!("page {} is empty", k + 1)));
     }
     let (catalog, tree, regular, bold) = (Ref::new(1), Ref::new(2), Ref::new(3), Ref::new(4));
-    // Page, content and image of page k.
+    // Page, content, image and soft mask of page k: the masks and the
+    // fonts' descriptors after every page.
+    let n = pages.len() as i32;
     let ids = |k: usize| {
         let b = 5 + 3 * k as i32;
-        (Ref::new(b), Ref::new(b + 1), Ref::new(b + 2))
+        let mask = 5 + 3 * n + 2 + k as i32;
+        (
+            Ref::new(b),
+            Ref::new(b + 1),
+            Ref::new(b + 2),
+            Ref::new(mask),
+        )
     };
     let mut pdf = Pdf::new();
     pdf.catalog(catalog).pages(tree);
     pdf.pages(tree)
         .kids((0..pages.len()).map(|k| ids(k).0))
         .count(pages.len() as i32);
-    for (id, name) in [(regular, &b"Helvetica"[..]), (bold, b"Helvetica-Bold")] {
-        pdf.type1_font(id)
-            .base_font(Name(name))
-            .encoding_predefined(Name(b"WinAnsiEncoding"));
-    }
+    font::write_fonts(
+        &mut pdf,
+        face,
+        [regular, bold],
+        [Ref::new(5 + 3 * n), Ref::new(6 + 3 * n)],
+    );
 
     // The rasters are the bulk of the file: pack them side by side. Level 3
     // is several times faster than the default and barely larger on points.
-    let packed: Vec<Vec<u8>> = pages
+    let packed: Vec<(Vec<u8>, Option<Vec<u8>>)> = pages
         .par_iter()
         .map(|page| {
             let mut rgb = Vec::with_capacity(page.img.as_raw().len() / 4 * 3);
             rgb.extend(page.img.pixels().flat_map(|p| [p[0], p[1], p[2]]));
-            miniz_oxide::deflate::compress_to_vec_zlib(&rgb, 3)
+            let pack = |b: &[u8]| miniz_oxide::deflate::compress_to_vec_zlib(b, 3);
+            let see_through = page.img.pixels().any(|p| p[3] < 255);
+            let alpha = see_through.then(|| {
+                let alpha: Vec<u8> = page.img.pixels().map(|p| p[3]).collect();
+                pack(&alpha)
+            });
+            (pack(&rgb), alpha)
         })
         .collect();
     let pt = 72.0 / dpi;
     for (k, page) in pages.iter().enumerate() {
-        let (page_id, content_id, image_id) = ids(k);
+        let (page_id, content_id, image_id, mask_id) = ids(k);
         let (w, h) = (page.img.width(), page.img.height());
         let (wpt, hpt) = (w as f32 * pt, h as f32 * pt);
 
@@ -146,11 +186,22 @@ pub fn pdf_bytes(pages: &[Page], dpi: f32) -> io::Result<Vec<u8>> {
         res.finish();
         p.finish();
 
-        let mut im = pdf.image_xobject(image_id, &packed[k]);
+        let (rgb, alpha) = &packed[k];
+        let mut im = pdf.image_xobject(image_id, rgb);
         im.filter(Filter::FlateDecode);
         im.width(w as i32).height(h as i32).bits_per_component(8);
         im.color_space().device_rgb();
+        if alpha.is_some() {
+            im.s_mask(mask_id);
+        }
         im.finish();
+        if let Some(alpha) = alpha {
+            let mut mask = pdf.image_xobject(mask_id, alpha);
+            mask.filter(Filter::FlateDecode);
+            mask.width(w as i32).height(h as i32).bits_per_component(8);
+            mask.color_space().device_gray();
+            mask.finish();
+        }
 
         let mut c = Content::new();
         c.save_state()

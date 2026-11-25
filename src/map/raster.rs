@@ -49,6 +49,9 @@ pub struct Frame {
     /// Text kept as text, when recording; see `keep_text`.
     text: Option<Vec<TextRun>>,
     encoding: Encoding,
+    /// How much of each pixel is covered, for a page with no fill; see
+    /// [`Frame::transparent`].
+    alpha: Option<Vec<f32>>,
 }
 
 impl Frame {
@@ -103,14 +106,35 @@ impl Frame {
             bg,
             text: None,
             encoding: Encoding::Senna,
+            alpha: None,
         }
+    }
+
+    /// The same page with no fill: what is drawn from now on keeps how
+    /// much of each pixel it covers, and [`Frame::to_image`] gives that as
+    /// alpha, the colour as it is without the page under it. Pixels nothing
+    /// is drawn over come out fully transparent, so call it before drawing.
+    #[must_use]
+    pub fn transparent(mut self) -> Self {
+        self.alpha = Some(vec![0.0; self.w * self.h]);
+        self
+    }
+
+    /// Whether the page has no fill ([`Frame::transparent`]).
+    #[must_use]
+    pub fn is_transparent(&self) -> bool {
+        self.alpha.is_some()
     }
 
     /// Fill the pixels `x0..x1 × y0..y1` (clipped to the frame) with `c`.
     pub fn fill(&mut self, [x0, y0, x1, y1]: [usize; 4], c: Lin) {
         let (x1, y1) = (x1.min(self.w), y1.min(self.h));
         for y in y0.min(y1)..y1 {
-            self.px[y * self.w + x0.min(x1)..y * self.w + x1].fill(c);
+            let row = y * self.w + x0.min(x1)..y * self.w + x1;
+            if let Some(a) = &mut self.alpha {
+                a[row.clone()].fill(1.0);
+            }
+            self.px[row].fill(c);
         }
     }
 
@@ -148,7 +172,28 @@ impl Frame {
 
     #[must_use]
     pub fn to_image(&self) -> RgbaImage {
-        encode(self.w, self.h, &self.px, self.encoding)
+        let Some(alpha) = &self.alpha else {
+            return encode(self.w, self.h, &self.px, self.encoding);
+        };
+        // Each pixel is the page under `1 - a` of it and the marks'
+        // premultiplied colour: take the page out and divide by `a`.
+        let bg = self.bg;
+        let px: Vec<Lin> = self
+            .px
+            .par_iter()
+            .zip(alpha)
+            .map(|(p, &a)| {
+                if a <= 0.0 {
+                    return bg;
+                }
+                std::array::from_fn(|k| ((p[k] - bg[k] * (1.0 - a)) / a).clamp(0.0, 1.0))
+            })
+            .collect();
+        let mut img = encode(self.w, self.h, &px, self.encoding);
+        for (p, &a) in img.pixels_mut().zip(alpha) {
+            p[3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        img
     }
 }
 
@@ -183,9 +228,13 @@ impl Canvas for Frame {
     }
     #[inline]
     fn blend(&mut self, x: usize, y: usize, c: Lin, a: f32) {
-        let p = &mut self.px[y * self.w + x];
+        let at = y * self.w + x;
+        let p = &mut self.px[at];
         for k in 0..3 {
             p[k] += (c[k] - p[k]) * a;
+        }
+        if let Some(cover) = &mut self.alpha {
+            cover[at] += (1.0 - cover[at]) * a;
         }
     }
     fn text_sink(&mut self) -> Option<&mut Vec<TextRun>> {
