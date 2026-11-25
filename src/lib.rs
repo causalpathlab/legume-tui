@@ -3,9 +3,9 @@
 //! A TUI started through [`Tool::session`] runs in a *host*: a small
 //! process, off the user's login session, that owns a pseudo-terminal and
 //! relays bytes between it and the user's terminal. The user can leave
-//! with Ctrl+Alt+D ([`detach_key`]; or lose the connection) and come back
+//! with Ctrl+] ([`detach_key`]; or lose the connection) and come back
 //! by starting the tool again or with `<tool> attach`; the program, and
-//! whatever it started, keeps running in between. Ctrl+Alt+S
+//! whatever it started, keeps running in between. Ctrl+\
 //! ([`switch_key`]) goes to another of the tool's sessions. A session
 //! keeps its id (`tool-view-1`) for life and may carry a label the user
 //! gives it, on detach or later. The host never changes the bytes, so
@@ -114,6 +114,7 @@ pub mod widgets;
 #[cfg(feature = "work")]
 pub mod work;
 
+pub use chord::Key;
 #[cfg(sessions)]
 pub use dir::{runtime_dir, Listed};
 pub use look::Look;
@@ -137,10 +138,10 @@ use std::time::Duration;
 
 /// Set to `1` (anything but empty or `0`) to run every TUI plain.
 pub const NO_DETACH_VAR: &str = "LEGUME_TUI_NO_DETACH";
-/// The detach key in place of Ctrl+Alt+D, e.g. `ctrl+alt+k` or `ctrl+\`:
-/// Ctrl, Alt or not, and a letter or one of `@ \ ] ^ _`.
+/// The detach key in place of Ctrl+], e.g. `ctrl+alt+k` or `ctrl+^`:
+/// Ctrl, Alt or not, and a letter or one of `@ \ ] ^ _` ([`Key::parse`]).
 pub const DETACH_KEY_VAR: &str = "LEGUME_TUI_DETACH_KEY";
-/// The switch key in place of Ctrl+Alt+S, spelled as for
+/// The switch key in place of Ctrl+\, spelled as for
 /// [`DETACH_KEY_VAR`].
 pub const SWITCH_KEY_VAR: &str = "LEGUME_TUI_SWITCH_KEY";
 /// Set by a host in its program's environment, to the session's id. A
@@ -223,16 +224,16 @@ pub struct Options {
     pub target: bool,
 }
 
-/// The detach key as a help screen shows it: `Ctrl+Alt+D`, or what
-/// [`DETACH_KEY_VAR`] sets.
+/// The detach key as a help screen shows it: `ctrl+]`, or what
+/// [`DETACH_KEY_VAR`] sets ([`Key::detach`]).
 pub fn detach_key() -> String {
-    chord::Key::detach().display()
+    Key::detach().display()
 }
 
-/// The switch key as a help screen shows it: `Ctrl+Alt+S`, or what
-/// [`SWITCH_KEY_VAR`] sets.
+/// The switch key as a help screen shows it: `ctrl+\`, or what
+/// [`SWITCH_KEY_VAR`] sets ([`Key::switch`]).
 pub fn switch_key() -> String {
-    chord::Key::switch().display()
+    Key::switch().display()
 }
 
 /// The key that runs what a screen set up: ctrl+r, which every terminal
@@ -274,7 +275,7 @@ static ATTACH_COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct HelpKey {
-    /// The key as [`detach_key`] spells it: `Ctrl+Alt+D`.
+    /// The key as [`detach_key`] spells it: `ctrl+]`.
     pub key: String,
     /// What it does in a word: `detach`.
     pub short: String,

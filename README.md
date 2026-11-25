@@ -1,10 +1,10 @@
 # legume-tui
 
 Detachable terminal sessions for the legume tools. A TUI started through
-this crate can be left (Ctrl+Alt+D, a dropped SSH connection, a closed
+this crate can be left (Ctrl+], a dropped SSH connection, a closed
 laptop) and come back to by starting the tool again or with `<tool>
 attach`; the program, and whatever it started, keeps running in between.
-Ctrl+Alt+S moves the terminal to another of the tool's sessions.
+Ctrl+\ moves the terminal to another of the tool's sessions.
 
 It also holds what the tools' terminal UIs share: picking the image
 protocol of the attached terminal, the session subcommands and their help,
@@ -18,7 +18,7 @@ that sessions are not supported there; a tool needs no `cfg` of its own.
 
 ```toml
 [dependencies]
-legume-tui = "0.3"
+legume-tui = "0.5"
 ```
 
 ## Adopting it in a tool
@@ -89,6 +89,29 @@ legume-tui = "0.3"
    command)` starts the tool's own TUI in a new detached session and
    returns its id; `TOOL.find(id)` and `TOOL.stop(id, force, wait)`
    follow and stop it, and `<tool> attach ID` shows it.
+
+## 0.5.0
+
+- The detach key is Ctrl+] and the switch key Ctrl+\ (were Ctrl+Alt+D
+  and Ctrl+Alt+S, which are gone, not kept beside them). Each is one
+  chord every terminal sends with no setup: macOS Terminal and iTerm2 do
+  not send Option as Alt unless told to, so Ctrl+Option+D never arrived,
+  and some Linux desktops (Xfce, some GNOME) take Ctrl+Alt+letter for
+  themselves. `LEGUME_TUI_DETACH_KEY` and `LEGUME_TUI_SWITCH_KEY` still
+  set others, the old ones too (`ctrl+alt+d`, `ctrl+alt+s`).
+- `detach_key()`, `switch_key()` and `help_keys()` spell keys in lower
+  case: `ctrl+]`, `ctrl+\`, `ctrl+alt+k`; the session paragraph and
+  `attach` help (`cli`) name the keys in effect.
+- `legume_tui::Key` is public: `Key::DETACH`, `Key::SWITCH`,
+  `Key::detach()`, `Key::switch()` (the keys in effect), `Key::parse`,
+  `display()`, and `bytes()`, what a terminal sends for the key in the
+  plain encoding. A tool's test types `&Key::DETACH.bytes()` (0x1d) and
+  `&Key::SWITCH.bytes()` (0x1c) in place of `b"\x1b\x04"` and
+  `b"\x1b\x13"`; in CSI-u they are `\x1b[93;5u` and `\x1b[92;5u`.
+  `testing::Private` runs the tool with neither variable set, so the
+  defaults hold whatever the shell the tests run in sets.
+- Tools: depend on `"0.5"`; a help screen or README that spells the old
+  keys takes `detach_key()` / `switch_key()` or the new spelling.
 
 ## 0.3.15
 
@@ -283,20 +306,31 @@ never share a name, and a client always reaches its own host.
 
 The client puts the user's terminal in raw mode, forwards its size (cells
 and pixels) on attach and on SIGWINCH, and keeps the detach key for
-itself: Ctrl+Alt+D, in the plain encoding (ESC then 0x04) and in the
-extended ones (CSI-u, modifyOtherKeys). `LEGUME_TUI_DETACH_KEY` names
-another (`ctrl+alt+k`, `ctrl+\\`) for a terminal or desktop that takes it;
-on macOS, Alt is Option set to send Meta. `legume_tui::detach_key()` gives
-the active key for a help screen. The switch key, Ctrl+Alt+S
-(`LEGUME_TUI_SWITCH_KEY`, `legume_tui::switch_key()`), is found the same
-way: the client leaves the session as on a detach, opens the picker on the
-same terminal (the current session marked, no "start new") and attaches
-to the one chosen; quitting the picker, or choosing the same session,
-returns to it. On attach and on detach the client
-writes a fixed reset (any half-sent sequence ended with ST and CAN, kitty
-images deleted, keyboard, mouse, paste and focus modes off). It does not
-enter the alternate screen itself: the program does, or the host says a
-program it joins is there. It follows the screen through the output it
+itself: Ctrl+], in the plain encoding (its control byte, 0x1d) and in
+the extended ones (CSI-u as kitty's keyboard protocol sends it,
+`ESC [ 93 ; 5 u`, its repeat too and its release swallowed; xterm's
+modifyOtherKeys, `ESC [ 27 ; 5 ; 93 ~`). In the plain encoding Ctrl+5
+sends the same byte, so it detaches too. `LEGUME_TUI_DETACH_KEY` names
+another (`ctrl+alt+d`, `ctrl+^`): Ctrl, Alt or not, and a letter or one
+of `@ \ ] ^ _`; with Alt, on macOS, Option must be set to send Meta.
+`legume_tui::detach_key()` gives the active key for a help screen, and
+`legume_tui::Key::DETACH.bytes()` what a test types for it. The switch
+key, Ctrl+\ (0x1c, `ESC [ 92 ; 5 u`; Ctrl+4 in the plain encoding;
+`LEGUME_TUI_SWITCH_KEY`, `legume_tui::switch_key()`), is found the same
+way. Neither reaches the program, whatever mode its terminal is in: the
+client's terminal is raw while it reads it, so Ctrl+\ is a byte to it,
+not the quit signal (SIGQUIT) a terminal in line mode makes of it, and
+a shell or a telnet in the session gets neither Ctrl+\ nor Ctrl+]; set
+the keys to others to send it them. On the way to the switch key's
+picker the terminal's signal keys and echo stay off, so the key held
+down does not end the client. For the switch key, the client leaves the
+session as on a detach, opens the picker on the same terminal (the
+current session marked, no "start new") and attaches to the one chosen;
+quitting the picker, or choosing the same session, returns to it. On
+attach and on detach the client writes a fixed reset (any half-sent
+sequence ended with ST and CAN, kitty images deleted, keyboard, mouse,
+paste and focus modes off). It does not enter the alternate screen
+itself: the program does, or the host says a program it joins is there. It follows the screen through the output it
 relays and, at the end, leaves the alternate screen only if it is in it,
 so a program that fails before its screen leaves its error in sight.
 SIGTERM, SIGINT, SIGQUIT and SIGHUP end it as a detach, with the terminal
@@ -752,8 +786,8 @@ Other wording may change.
 | --- | --- |
 | `LEGUME_TUI_NO_DETACH` | set (not `0`): run every TUI plain |
 | `LEGUME_TUI_SESSION` | set by a host in its program: the session's name |
-| `LEGUME_TUI_DETACH_KEY` | the detach key in place of Ctrl+Alt+D, e.g. `ctrl+alt+k` |
-| `LEGUME_TUI_SWITCH_KEY` | the switch key in place of Ctrl+Alt+S |
+| `LEGUME_TUI_DETACH_KEY` | the detach key in place of Ctrl+], e.g. `ctrl+alt+d` |
+| `LEGUME_TUI_SWITCH_KEY` | the switch key in place of Ctrl+\, e.g. `ctrl+alt+s` |
 | `LEGUME_TUI_DIR` | socket directory in place of `$XDG_RUNTIME_DIR/legume-tui` or `$TMPDIR/legume-tui-<uid>` |
 
 ## Tests

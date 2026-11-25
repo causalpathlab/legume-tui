@@ -182,12 +182,13 @@ pub fn session_help(tool: &Tool, help: SessionHelp<'_>) -> String {
     let mut text = help.lead.map_or(String::new(), |lead| format!("{lead} "));
     text.push_str(&format!(
         "In an interactive terminal it runs as a detachable session, so {} \
-         when the connection drops. ctrl+alt+d detaches (the first time, it \
-         asks for a name; LEGUME_TUI_DETACH_KEY sets another key); ctrl+alt+s \
-         switches to another session (LEGUME_TUI_SWITCH_KEY). {resume} \
-         --no-detach (or LEGUME_TUI_NO_DETACH=1) runs it in this terminal \
-         only.",
+         when the connection drops. {} detaches (the first time, it asks for \
+         a name; LEGUME_TUI_DETACH_KEY sets another key); {} switches to \
+         another session (LEGUME_TUI_SWITCH_KEY). {resume} --no-detach (or \
+         LEGUME_TUI_NO_DETACH=1) runs it in this terminal only.",
         help.what_goes_on.unwrap_or("its work goes on"),
+        crate::detach_key(),
+        crate::switch_key(),
     ));
     if let Some(more) = help.more {
         text.push(' ');
@@ -260,18 +261,19 @@ pub fn about(tool: &Tool, quit: &str) -> About {
         tool.session_command(List),
     );
     let tool = tool.name();
+    let (detach, switch) = (crate::detach_key(), crate::switch_key());
     About {
         attach: format!(
             "\
 Return to a detached `{tool}` session in this terminal.
 
 A session keeps running when the terminal goes (a dropped connection, or
-the detach key: ctrl+alt+d unless LEGUME_TUI_DETACH_KEY sets another) and
+the detach key: {detach} unless LEGUME_TUI_DETACH_KEY sets another) and
 is picked up again here, or by starting it again with nothing named. The
 first detach by the key asks for a label (Enter keeps the id);
 `{rename_typed}` or `r` in the picker changes it later. A session is found by its
 label or its id; with one live the name is optional, with several a
-picker opens. `{list_typed}` lists them. Inside one, ctrl+alt+s (or
+picker opens. `{list_typed}` lists them. Inside one, {switch} (or
 LEGUME_TUI_SWITCH_KEY) switches to another."
         ),
         sessions: format!(

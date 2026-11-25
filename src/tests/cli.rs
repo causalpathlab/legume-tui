@@ -15,9 +15,9 @@ fn the_session_paragraph_says_it_all_by_default() {
     assert_eq!(
         flat(&help),
         "In an interactive terminal it runs as a detachable session, so its \
-         work goes on when the connection drops. ctrl+alt+d detaches (the \
+         work goes on when the connection drops. ctrl+] detaches (the \
          first time, it asks for a name; LEGUME_TUI_DETACH_KEY sets another \
-         key); ctrl+alt+s switches to another session (LEGUME_TUI_SWITCH_KEY). \
+         key); ctrl+\\ switches to another session (LEGUME_TUI_SWITCH_KEY). \
          Started again with nothing named, it offers the live sessions to \
          return to; `tool attach`, `sessions`, `kill` and `rename` manage \
          them. --no-detach (or LEGUME_TUI_NO_DETACH=1) runs it in this \
