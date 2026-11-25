@@ -140,6 +140,14 @@ impl Job {
         }
     }
 
+    /// The same job on a page with no fill ([`Frame::transparent`]): the
+    /// finished frame's pixels no point covers are transparent.
+    #[must_use]
+    pub fn transparent(mut self) -> Self {
+        self.canvas = self.canvas.transparent();
+        self
+    }
+
     /// The radius layer `layer` is drawn at, before each mark's size.
     #[must_use]
     pub fn radius(&self, layer: usize) -> f32 {
