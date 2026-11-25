@@ -10,7 +10,7 @@
 //! let dir = Private::new("target/debug/tool");
 //! let mut t = dir.term(&["view"], &[]);
 //! t.wait_screen("a line the screen draws");
-//! t.type_(b"\x1b\x04");
+//! t.type_(&legume_tui::Key::DETACH.bytes());
 //! t.answer(1, b"\r");
 //! assert_eq!(t.exit_code(), 0);
 //! dir.wait_listed("detached");
@@ -105,12 +105,14 @@ impl Private {
     }
 
     /// The tool, its sessions here, in a clean environment: no session,
-    /// multiplexer or opt-out around it, nothing of the terminal the tests
-    /// run in ([`crate::TERMINAL_VARS`]: a `TERM_PROGRAM=tmux` or an ssh
-    /// login would turn pictures off), and no backtrace setting from the
-    /// test runner (CI's `RUST_BACKTRACE=1` would have an error the tool
-    /// ends with followed by a trace longer than the screen, so what a
-    /// test looks for on the screen depended on where it ran). A test
+    /// multiplexer or opt-out around it, the default detach and switch
+    /// keys ([`crate::Key::DETACH`], [`crate::Key::SWITCH`]), nothing of
+    /// the terminal the tests run in ([`crate::TERMINAL_VARS`]: a
+    /// `TERM_PROGRAM=tmux` or an ssh login would turn pictures off), and
+    /// no backtrace setting from the test runner (CI's `RUST_BACKTRACE=1`
+    /// would have an error the tool ends with followed by a trace longer
+    /// than the screen, so what a test looks for on the screen depended on
+    /// where it ran). A test
     /// that wants one passes it in `env`.
     pub fn command(&self) -> Command {
         let mut cmd = Command::new(&self.exe);
@@ -123,7 +125,9 @@ impl Private {
             .env_remove("RUST_BACKTRACE")
             .env_remove("RUST_LIB_BACKTRACE")
             .env_remove(crate::SESSION_VAR)
-            .env_remove(crate::NO_DETACH_VAR);
+            .env_remove(crate::NO_DETACH_VAR)
+            .env_remove(crate::DETACH_KEY_VAR)
+            .env_remove(crate::SWITCH_KEY_VAR);
         cmd
     }
 
@@ -640,13 +644,15 @@ impl Term {
         self.status().code().unwrap_or(-1)
     }
 
-    /// Whether the terminal is back in its line mode. Read through our
-    /// end, which shares the mode with the tool's: macOS revokes the
-    /// tool's end, our handle on it too, once the tool (its session
-    /// leader) has ended.
+    /// Whether the terminal is back in its line mode, its signal keys
+    /// and echo on. Read through our end, which shares the mode with the
+    /// tool's: macOS revokes the tool's end, our handle on it too, once
+    /// the tool (its session leader) has ended.
     pub fn cooked(&self) -> bool {
+        use rustix::termios::LocalModes;
         let t = rustix::termios::tcgetattr(&self.master).unwrap();
-        t.local_modes.contains(rustix::termios::LocalModes::ICANON)
+        t.local_modes
+            .contains(LocalModes::ICANON | LocalModes::ISIG | LocalModes::ECHO)
     }
 }
 

@@ -72,7 +72,7 @@ fn ctrl_c_interrupts_and_other_presses_go_to_the_key_handler() {
 #[test]
 fn a_framed_view_ends_its_title_row_with_the_session_keys() {
     let mut view = Counter::default();
-    let keys = vec![("ctrl+alt+d".to_string(), "detach".to_string())];
+    let keys = vec![("ctrl+]".to_string(), "detach".to_string())];
     let mut framed = Framed {
         screen: &mut view,
         keys,
@@ -81,17 +81,17 @@ fn a_framed_view_ends_its_title_row_with_the_session_keys() {
     let mut t = Terminal::new(TestBackend::new(30, 2)).unwrap();
     t.draw(|f| framed.render(f)).unwrap();
     let top = &rows(&t)[0];
-    assert!(top.trim_end().ends_with("ctrl+alt+d detach"), "{top}");
+    assert!(top.trim_end().ends_with("ctrl+] detach"), "{top}");
     assert!(top.starts_with(" VIEW "), "{top}");
     framed.quit();
     assert_eq!(view.quits, 1, "a stop is the view's own quit");
-    assert_eq!(view.width_seen, " ctrl+alt+d detach  ".len() as u16 + 1);
+    assert_eq!(view.width_seen, " ctrl+] detach  ".len() as u16 + 1);
     assert_eq!(title_keys_width(), 0, "outside a draw");
 }
 
 #[test]
 fn a_title_bar_keeps_the_keys_whole_however_narrow() {
-    let keys = vec![("ctrl+alt+d".to_string(), "detach".to_string())];
+    let keys = vec![("ctrl+]".to_string(), "detach".to_string())];
     let look = Look::default();
     let mut t = Terminal::new(TestBackend::new(24, 1)).unwrap();
     t.draw(|f| {
@@ -99,7 +99,7 @@ fn a_title_bar_keeps_the_keys_whole_however_narrow() {
         title_bar(f, f.area(), title, &keys, &look);
     })
     .unwrap();
-    assert!(rows(&t)[0].contains("ctrl+alt+d detach"), "{:?}", rows(&t));
+    assert!(rows(&t)[0].contains("ctrl+] detach"), "{:?}", rows(&t));
 }
 
 #[test]

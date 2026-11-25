@@ -135,7 +135,7 @@ fn a_host_not_reading_holds_up_neither_the_keys_nor_the_detach_key() {
         for _ in 0..(8 << 20) / chunk.len() {
             typing.write_all(&chunk).unwrap();
         }
-        typing.write_all(b"\x1b\x04").unwrap();
+        typing.write_all(&Key::DETACH.bytes()).unwrap();
         let _ = typed.send(());
     });
     let relay = Relay::spawn(sock, keys, winch, stop);
@@ -374,7 +374,7 @@ fn a_key_typed_with_the_detach_key_reaches_the_host() {
     let backlog = 64 << 10;
     let typist = std::thread::spawn(move || {
         typing.write_all(&vec![b'x'; backlog]).unwrap();
-        typing.write_all(b"y\x1b\x04").unwrap();
+        typing.write_all(b"y\x1d").unwrap();
     });
     let unread = keys.try_clone().unwrap();
     let relay = Relay::spawn(sock, keys, winch, stop);
@@ -407,7 +407,7 @@ fn leaving_waits_for_the_host_to_let_go_within_a_bound() {
         stop_in: _stop_in,
     } = Relay::new();
     let relay = Relay::spawn(sock, keys, winch, stop);
-    typing.write_all(b"y\x1b\x04").unwrap();
+    typing.write_all(b"y\x1d").unwrap();
     // To the end: the client has shut its side.
     assert_eq!(typed_to_the_end(&mut host), b"y");
     std::thread::sleep(Duration::from_millis(20));
@@ -416,7 +416,7 @@ fn leaving_waits_for_the_host_to_let_go_within_a_bound() {
     assert_eq!(relay.join().unwrap(), Outcome::Detached);
     // A host that never lets go.
     let start = Instant::now();
-    assert_eq!(relay_ends(b"\x1b\x04", true), Outcome::Detached);
+    assert_eq!(relay_ends(&Key::DETACH.bytes(), true), Outcome::Detached);
     let took = start.elapsed();
     assert!(
         took >= LEAVE_WAIT && took < LEAVE_WAIT + Duration::from_secs(2),
@@ -426,10 +426,10 @@ fn leaving_waits_for_the_host_to_let_go_within_a_bound() {
 
 #[test]
 fn the_keys_end_the_relay_as_a_detach_or_a_switch() {
-    assert_eq!(relay_ends(b"\x1b\x04", false), Outcome::Detached);
-    assert_eq!(relay_ends(b"\x1b[100;7u", false), Outcome::Detached);
-    assert_eq!(relay_ends(b"\x1b\x13", false), Outcome::Switch);
-    assert_eq!(relay_ends(b"\x1b[115;7u", false), Outcome::Switch);
+    assert_eq!(relay_ends(b"\x1d", false), Outcome::Detached);
+    assert_eq!(relay_ends(b"\x1b[93;5u", false), Outcome::Detached);
+    assert_eq!(relay_ends(b"\x1c", false), Outcome::Switch);
+    assert_eq!(relay_ends(b"\x1b[92;5u", false), Outcome::Switch);
 }
 
 /// A pseudo-terminal pair in line mode: the user's side to type on, and

@@ -93,24 +93,29 @@ pub(crate) fn end_reset(alt: bool) -> String {
     }
 }
 
-/// The terminal in raw mode until this is dropped.
-struct Raw<'a> {
+/// The terminal's modes as they were, set again when this is dropped.
+struct Kept<'a> {
     fd: BorrowedFd<'a>,
     saved: rustix::termios::Termios,
 }
 
-impl<'a> Raw<'a> {
-    fn enter(fd: BorrowedFd<'a>) -> io::Result<Self> {
-        use rustix::termios::{tcgetattr, tcsetattr, OptionalActions};
-        let saved = tcgetattr(fd)?;
-        let mut raw = saved.clone();
-        raw.make_raw();
-        tcsetattr(fd, OptionalActions::Now, &raw)?;
+impl<'a> Kept<'a> {
+    fn modes(fd: BorrowedFd<'a>) -> io::Result<Self> {
+        let saved = rustix::termios::tcgetattr(fd)?;
         Ok(Self { fd, saved })
+    }
+
+    /// The modes kept, and the terminal raw until this is dropped.
+    fn raw(fd: BorrowedFd<'a>) -> io::Result<Self> {
+        let kept = Self::modes(fd)?;
+        let mut raw = kept.saved.clone();
+        raw.make_raw();
+        rustix::termios::tcsetattr(fd, rustix::termios::OptionalActions::Now, &raw)?;
+        Ok(kept)
     }
 }
 
-impl Drop for Raw<'_> {
+impl Drop for Kept<'_> {
     fn drop(&mut self) {
         use rustix::termios::{tcsetattr, OptionalActions};
         let _ = tcsetattr(self.fd, OptionalActions::Now, &self.saved);
@@ -358,7 +363,7 @@ pub(crate) fn run(sock: UnixStream) -> io::Result<Outcome> {
     // Before the terminal goes raw, so no signal finds it raw unhandled.
     let stop = Woken::stops()?;
     let winch = Woken::by(&[signal_hook::consts::SIGWINCH])?;
-    let raw = Raw::enter(stdin)?;
+    let mut raw = Kept::raw(stdin)?;
     // The screen as the relayed output leaves it: the user's own at first.
     let mut screen = Scan::default();
     let outcome = (|| {
@@ -376,6 +381,16 @@ pub(crate) fn run(sock: UnixStream) -> io::Result<Outcome> {
     })();
     let _ = stdout.write_all(end_reset(screen.alt()).as_bytes());
     let _ = stdout.flush();
+    if matches!(outcome, Ok(Outcome::Switch)) {
+        // On to the picker with the signal keys and echo off: the switch
+        // key held down (Ctrl+\ is the quit key in line mode) must neither
+        // end the client before the picker has the terminal raw nor be
+        // echoed. [`attach_and_report`] turns them on again.
+        use rustix::termios::LocalModes;
+        raw.saved
+            .local_modes
+            .remove(LocalModes::ISIG | LocalModes::ECHO);
+    }
     drop(raw);
     // Only now: a stop signal must not find the terminal raw unhandled.
     drop((stop, winch));
@@ -549,6 +564,10 @@ fn relay(
 /// gives, or back to this one. One that ended while the picker was open
 /// is said, and the picker offered again.
 pub(crate) fn attach_and_report(dir: &Path, tool: &Tool, id: &str) -> io::Result<i32> {
+    // The terminal's modes as found, set again on the way out: a switch
+    // leaves its signal keys and echo off ([`run`]).
+    let stdin = io::stdin();
+    let found = Kept::modes(stdin.as_fd()).ok();
     let mut id = id.to_string();
     let mut switched = false;
     loop {
@@ -570,6 +589,8 @@ pub(crate) fn attach_and_report(dir: &Path, tool: &Tool, id: &str) -> io::Result
             switched = true;
             continue;
         }
+        // Ctrl+C skips the label prompt.
+        drop(found);
         return Ok(report(dir, tool, &id, &outcome));
     }
 }

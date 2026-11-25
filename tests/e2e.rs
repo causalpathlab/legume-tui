@@ -14,6 +14,7 @@
 #![cfg(sessions)]
 
 use legume_tui::testing::{alive, Private, Replies, Setup, PROMPT, WAIT};
+use legume_tui::Key;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
@@ -59,9 +60,9 @@ fn detach_attach_lose_nest_and_kill() {
 
     // Detach with the key: the client exits, the terminal is restored,
     // the program runs on.
-    first.wait_for("detach-key=Ctrl+Alt+D");
-    first.wait_for("switch-key=Ctrl+Alt+S");
-    first.type_(b"\x1b\x04");
+    first.wait_for("detach-key=ctrl+]");
+    first.wait_for("switch-key=ctrl+\\");
+    first.type_(&Key::DETACH.bytes());
     // Asked for a name on the restored screen; Enter keeps it unnamed.
     first.answer(1, b"\r");
     assert_eq!(first.exit_code(), 0);
@@ -82,12 +83,12 @@ fn detach_attach_lose_nest_and_kill() {
     );
     assert!(listed.contains("s ago\tpid "), "{listed:?}");
 
-    // Attach from another terminal, with the key in CSI-u this time: a
-    // full repaint arrives.
+    // Attach from another terminal, with the key in CSI-u this time (as
+    // kitty's keyboard protocol sends it): a full repaint arrives.
     let mut second = dir.term(&["attach"], &[]);
     second.wait_for("demo-screen-repaint-2");
     assert!(dir.run(&["sessions"]).contains("attached"));
-    second.type_(b"\x1b[100;7u");
+    second.type_(b"\x1b[93;5u");
     second.answer(1, b"\r");
     assert_eq!(second.exit_code(), 0);
     assert!(second.cooked());
@@ -128,7 +129,7 @@ fn the_terminal_attached_last_is_the_one_the_program_hears_of() {
     let dir = private();
     let mut first = dir.term(&[], &[("TERM_PROGRAM", "first-terminal")]);
     first.wait_for("terminal=first-terminal");
-    first.type_(b"\x1b\x04");
+    first.type_(&Key::DETACH.bytes());
     first.answer(1, b"\r");
     assert_eq!(first.exit_code(), 0);
     let pid = dir.program_pid();
@@ -185,7 +186,7 @@ fn a_nested_screen_repaints_after_a_reattach() {
     // A screen the hosted program starts runs in the same session.
     first.type_(b"v");
     first.wait_for("nested-repaint-1");
-    first.type_(b"\x1b\x04");
+    first.type_(&Key::DETACH.bytes());
     first.answer(1, b"\r");
     assert_eq!(first.exit_code(), 0);
     let listed = dir.wait_listed("detached");
@@ -231,7 +232,7 @@ fn starting_again_offers_the_detached_sessions() {
     let dir = private();
     let mut first = dir.term(&[], &[]);
     first.wait_for("demo-screen-repaint-1");
-    first.type_(b"\x1b\x04");
+    first.type_(&Key::DETACH.bytes());
     first.answer(1, b"\r");
     assert_eq!(first.exit_code(), 0);
 
@@ -241,7 +242,7 @@ fn starting_again_offers_the_detached_sessions() {
     again.wait_for("detached");
     again.type_(b"\r");
     again.wait_for("demo-screen-repaint-2");
-    again.type_(b"\x1b\x04");
+    again.type_(&Key::DETACH.bytes());
     again.answer(1, b"\r");
     assert_eq!(again.exit_code(), 0);
 
@@ -250,7 +251,7 @@ fn starting_again_offers_the_detached_sessions() {
     new.wait_for("> demo-view-1");
     new.type_(b"n");
     new.wait_for("demo-screen-repaint-1");
-    new.type_(b"\x1b\x04");
+    new.type_(&Key::DETACH.bytes());
     new.answer(1, b"\r");
     assert_eq!(new.exit_code(), 0);
     new.wait_for("[detached from demo-view-2");
@@ -279,18 +280,21 @@ fn starting_again_offers_the_detached_sessions() {
 fn the_detach_key_can_be_changed() {
     let dir = private();
     let keys = [
-        (legume_tui::DETACH_KEY_VAR, "ctrl+\\"),
-        (legume_tui::SWITCH_KEY_VAR, "ctrl+]"),
+        (legume_tui::DETACH_KEY_VAR, "ctrl+alt+d"),
+        (legume_tui::SWITCH_KEY_VAR, "ctrl+alt+s"),
     ];
     let mut t = dir.term(&[], &keys);
-    t.wait_for("detach-key=Ctrl+\\");
-    t.wait_for("switch-key=Ctrl+]");
+    t.wait_for("detach-key=ctrl+alt+d");
+    t.wait_for("switch-key=ctrl+alt+s");
+    // The default keys are the program's now.
+    t.type_(&Key::SWITCH.bytes());
+    t.type_(&Key::DETACH.bytes());
     // The switch key, to the picker and straight back.
-    t.type_(b"\x1d");
+    t.type_(b"\x1b\x13");
     t.wait_for("(current)");
     t.type_(b"q");
     t.wait_for("demo-screen-repaint-2");
-    t.type_(b"\x1c");
+    t.type_(b"\x1b\x04");
     t.answer(1, b"\r");
     assert_eq!(t.exit_code(), 0);
     assert!(t.cooked());
@@ -303,7 +307,7 @@ fn detached(dir: &Private, label: &str) {
     // A target: a new session, whatever is live.
     let mut t = dir.term(&["open"], &[]);
     t.wait_for("demo-screen-repaint-1");
-    t.type_(b"\x1b\x04");
+    t.type_(&Key::DETACH.bytes());
     t.answer(1, format!("{label}\r").as_bytes());
     assert_eq!(t.exit_code(), 0);
 }
@@ -313,7 +317,7 @@ fn a_session_is_named_on_its_first_detach_and_found_by_its_name() {
     let dir = private();
     let mut first = dir.term(&[], &[]);
     first.wait_for("demo-screen-repaint-1");
-    first.type_(b"\x1b\x04");
+    first.type_(&Key::DETACH.bytes());
     first.wait_for("Detached demo-view-1. Name it (Enter to keep): ");
     // An invalid name is said, and asked again.
     first.answer(1, b"a b\r");
@@ -329,7 +333,7 @@ fn a_session_is_named_on_its_first_detach_and_found_by_its_name() {
     // Back by its name, and not asked again.
     let mut again = dir.term(&["attach", "work"], &[]);
     again.wait_for("demo-screen-repaint-2");
-    again.type_(b"\x1b\x04");
+    again.type_(&Key::DETACH.bytes());
     assert_eq!(again.exit_code(), 0);
     again.wait_for("detached: work");
     assert!(!again.text().contains(PROMPT));
@@ -338,7 +342,7 @@ fn a_session_is_named_on_its_first_detach_and_found_by_its_name() {
     let mut second = dir.term(&["open"], &[]);
     second.wait_for("[detached: work; `demo attach NAME` to return]");
     second.wait_for("demo-screen-repaint-1");
-    second.type_(b"\x1b[100;7u");
+    second.type_(b"\x1b[93;5u");
     second.answer(1, b"work\r");
     second.wait_for("work is taken by demo-view-1");
     second.answer(2, b"\x03");
@@ -350,7 +354,7 @@ fn a_session_is_named_on_its_first_detach_and_found_by_its_name() {
     // So does the end of the input (Ctrl+D).
     let mut third = dir.term(&["attach", "view-2"], &[]);
     third.wait_for("demo-screen-repaint-2");
-    third.type_(b"\x1b\x04");
+    third.type_(&Key::DETACH.bytes());
     third.answer(1, b"\x04");
     assert_eq!(third.exit_code(), 0);
     third.wait_for("[detached from demo-view-2");
@@ -481,7 +485,7 @@ fn a_bare_attach_picks_among_several_and_renames_in_place() {
     pick.type_(b"j\r");
     dir.wait_listed("demo-view-2\tattached");
     assert!(!pick.text().contains("start new"));
-    pick.type_(b"\x1b\x04");
+    pick.type_(&Key::DETACH.bytes());
     pick.answer(1, b"\r");
     assert_eq!(pick.exit_code(), 0);
 
@@ -512,7 +516,7 @@ fn the_switch_key_moves_a_client_between_sessions() {
     // The plain encoding: the picker, the current session marked and the
     // other offered first.
     let mark = t.seen_len();
-    t.type_(b"\x1b\x13");
+    t.type_(&Key::SWITCH.bytes());
     t.wait_for_after(mark, "(current)");
     t.wait_for_after(mark, "> demo-view-2");
     t.type_(b"\r");
@@ -521,17 +525,24 @@ fn the_switch_key_moves_a_client_between_sessions() {
 
     // CSI-u, and back.
     let mark = t.seen_len();
-    t.type_(b"\x1b[115;7u");
+    t.type_(b"\x1b[92;5u");
     t.wait_for_after(mark, "(current)");
     t.wait_for_after(mark, "> one (demo-view-1)");
     t.type_(b"\r");
     dir.wait_listed("one (demo-view-1)\tattached");
     dir.wait_listed("demo-view-2\tdetached");
 
-    // Quitting the picker returns to the same session, repainted.
+    // Quitting the picker returns to the same session, repainted. The key
+    // held down (Ctrl+\\, the quit key in line mode) does not end the
+    // client on its way to the picker.
     let mark = t.seen_len();
-    t.type_(b"\x1b\x13");
+    t.type_(&Key::SWITCH.bytes());
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(10));
+        t.type_(&Key::SWITCH.bytes());
+    }
     t.wait_for_after(mark, "(current)");
+    assert!(t.child.try_wait().unwrap().is_none(), "the client lives");
     dir.wait_listed("one (demo-view-1)\tdetached");
     t.type_(b"q");
     dir.wait_listed("one (demo-view-1)\tattached");
@@ -539,7 +550,7 @@ fn the_switch_key_moves_a_client_between_sessions() {
     assert!(!t.text().contains(PROMPT), "a switch asks for no name");
 
     // Detached at last: named already, so not asked.
-    t.type_(b"\x1b\x04");
+    t.type_(&Key::DETACH.bytes());
     assert_eq!(t.exit_code(), 0);
     t.wait_for("detached: one");
     assert!(t.cooked());
@@ -639,7 +650,7 @@ fn the_detach_key_works_while_the_program_reads_nothing() {
     all_typed
         .recv_timeout(WAIT)
         .expect("the client stopped reading the terminal");
-    t.type_(b"\x1b\x04");
+    t.type_(&Key::DETACH.bytes());
     t.answer(1, b"\r");
     assert_eq!(t.exit_code(), 0);
     t.wait_for("[detached from demo-stall-1");
@@ -654,7 +665,7 @@ fn a_stop_signal_in_the_switch_picker_ends_the_client() {
     detached(&dir, "");
     let mut t = dir.term(&["attach"], &[]);
     t.wait_for("demo-screen-repaint-2");
-    t.type_(b"\x1b\x13");
+    t.type_(&Key::SWITCH.bytes());
     t.wait_for("(current)");
     t.signal(rustix::process::Signal::TERM);
     assert_eq!(t.status().signal(), Some(15));
@@ -753,7 +764,7 @@ fn kill_reaches_a_child_run_before_the_screen_then_ends_the_program() {
 
 /// Detach `t` by the key, keeping its session unnamed.
 fn detach(t: &mut legume_tui::testing::Term) {
-    t.type_(b"\x1b\x04");
+    t.type_(&Key::DETACH.bytes());
     t.answer(1, b"\r");
     assert_eq!(t.exit_code(), 0);
 }
@@ -1070,7 +1081,7 @@ fn a_session_started_from_code_runs_detached_until_stopped() {
     // Attached, the program draws; detached again, it runs on.
     let mut t = dir.term(&["attach", "demo-job-fit"], &[]);
     t.wait_screen("demo-bye waiting");
-    t.type_(b"\x1b\x04");
+    t.type_(&Key::DETACH.bytes());
     assert_eq!(t.exit_code(), 0);
     assert_eq!(dir.run(&["find", "demo-job-fit"]).trim(), "detached");
 

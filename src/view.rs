@@ -541,7 +541,7 @@ pub fn input_line(prompt: &str, text: &str, keys: &[(&str, &str)], look: &Look) 
 pub fn session_keys() -> Vec<(String, String)> {
     crate::help_keys()
         .into_iter()
-        .map(|k| (k.key.to_lowercase(), k.short))
+        .map(|k| (k.key, k.short))
         .collect()
 }
 
