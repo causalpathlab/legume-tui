@@ -23,6 +23,8 @@ pub mod legend;
 #[cfg(feature = "map")]
 pub mod offsets;
 #[cfg(feature = "map")]
+pub mod palette;
+#[cfg(feature = "map")]
 pub mod pointer;
 #[cfg(feature = "map")]
 pub mod points;

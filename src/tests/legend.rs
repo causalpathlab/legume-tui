@@ -111,3 +111,67 @@ fn a_ramp_key_titles_a_bar_of_the_ramp() {
         ]
     );
 }
+
+#[test]
+fn a_ramp_key_labels_its_ticks_and_names_the_missing() {
+    let font = Font::for_cell_height(16.0, false);
+    let lh = font.line_height() as f32;
+    let ink = to_linear([20, 20, 20]);
+    let ramp = [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]];
+    let ticks = [
+        (0.0, "0".to_string()),
+        (0.5, "50".to_string()),
+        (0.51, "51".to_string()),
+        (1.0, "100".to_string()),
+    ];
+    let key = RampKey {
+        title: "m6A per 1k UMI",
+        ramp: &ramp,
+        ticks: &ticks,
+        length: Some(10.0),
+        missing: Some(("NA", [0.5; 3])),
+    };
+    let mut f = Frame::blank(400, 200, PAGE);
+    f.keep_text();
+    let bounds = [0.0, 0.0, 400.0, 200.0];
+    let area = draw_ramp_key_in(&mut f, &key, font, ink, bounds, KeyPlace::BottomRight);
+    // A label that would touch the one before is left out.
+    assert_eq!(kept(&mut f), ["m6A per 1k UMI", "0", "50", "100", "NA"]);
+    // In the bottom-right corner, inside the frame, its size as said.
+    let (w, h) = key.size(font);
+    let half = (lh / 2.0).floor();
+    assert_eq!(area[2], 400.0);
+    assert_eq!(area[3], 200.0);
+    assert_eq!(
+        (area[2] - area[0], area[3] - area[1]),
+        (w + 2.0 * half, h + 2.0 * half)
+    );
+    assert!(w >= 10.0 * lh);
+}
+
+#[test]
+fn a_ramp_key_title_too_wide_for_its_box_is_cut_short() {
+    let font = Font::for_cell_height(16.0, false);
+    let ramp = [[0.0; 3], [1.0; 3]];
+    let title = "a very long title naming the column and the file it came from";
+    let key = RampKey {
+        title,
+        ramp: &ramp,
+        length: Some(4.0),
+        ..RampKey::default()
+    };
+    let mut f = Frame::blank(200, 100, PAGE);
+    f.keep_text();
+    let area = draw_ramp_key_in(
+        &mut f,
+        &key,
+        font,
+        [0.0; 3],
+        [0.0, 0.0, 200.0, 100.0],
+        KeyPlace::TopLeft,
+    );
+    let text = kept(&mut f);
+    assert!(text[0].ends_with("...") && text[0].len() < title.len());
+    assert!(area[2] <= 200.0);
+    assert!(key.size_within(font, 150.0).0 <= 150.0);
+}

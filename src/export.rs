@@ -29,12 +29,14 @@ use std::path::Path;
 
 pub mod font;
 pub mod panel;
+pub mod svg;
 
 pub use font::Face;
 use font::{helvetica_width, win_ansi};
 #[cfg(feature = "clap")]
 pub use panel::PanelArgs;
 pub use panel::{Areas, Background, KeyEntry, Labels, Panel};
+pub use svg::{svg_string, write_svg};
 
 /// One page: the raster, and the text to set over it (pixel coordinates).
 pub struct Page {
@@ -78,7 +80,7 @@ pub const MAX_PIXELS: usize = 80_000_000;
 /// Point size of text whose raster line is `line` pixels tall, and where its
 /// baseline sits below the top of that line, as fractions of it.
 pub(crate) const EM_PER_LINE: f32 = 0.74;
-const BASELINE: f32 = 0.78;
+pub(crate) const BASELINE: f32 = 0.78;
 
 /// Write `pages` to `path`, `dpi` raster pixels to the inch.
 ///
@@ -251,6 +253,29 @@ pub fn pdf_bytes_in(pages: &[Page], dpi: f32, face: Face) -> io::Result<Vec<u8>>
         pdf.stream(content_id, &c.finish());
     }
     Ok(pdf.finish())
+}
+
+/// `img` as PNG bytes that say `dpi`, so an editor places it at its size;
+/// alpha kept.
+///
+/// # Errors
+/// When the image cannot be encoded.
+pub(crate) fn png_at_dpi(img: &RgbaImage, dpi: f32) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, img.width(), img.height());
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    // Pixels to the metre, both ways.
+    let ppm = (dpi / 0.0254).round() as u32;
+    enc.set_pixel_dims(Some(png::PixelDimensions {
+        xppu: ppm,
+        yppu: ppm,
+        unit: png::Unit::Meter,
+    }));
+    enc.write_header()
+        .and_then(|mut w| w.write_image_data(img.as_raw()))
+        .map_err(io::Error::other)?;
+    Ok(out)
 }
 
 /// A linear colour as the PDF's sRGB fractions, by senna's table.

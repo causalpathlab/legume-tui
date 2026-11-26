@@ -17,6 +17,7 @@ use super::font::Face;
 use super::{fits, write_pdf_in, Page, EM_PER_LINE};
 use crate::map::colour::{Lin, Srgb};
 use crate::map::labels::Rect;
+use crate::map::legend::{draw_ramp_key_in, KeyPlace, RampKey};
 use crate::map::raster::{blend_round, Frame};
 use crate::map::text::{self, Font};
 use crate::map::viewport::{Bounds, Viewport, YAxis};
@@ -392,6 +393,89 @@ impl Panel {
         let (rows, cols, lh, col_w) = self.key_grid(entries, h as f32, f32::INFINITY);
         let w = (cols as f32 * col_w + 0.5 * lh).ceil() as usize;
         let key_h = rows as f32 * lh;
+        let mut frame = self.blank(w, h, page, keep_text);
+        let y0 = (0.5 * (h as f32 - key_h)).max(0.0);
+        self.draw_key(&mut frame, entries, [0.5 * lh, y0, w as f32, y0 + key_h]);
+        Ok(frame)
+    }
+
+    /// Where the map and a ramp `key` go in a `(w, h)` pixel panel: in a
+    /// corner of the whole map for a corner `place`, else beside the map
+    /// at its right ([`KeyPlace::Right`], at most half the width) or under
+    /// it ([`KeyPlace::Below`], at most half the height), the map in what
+    /// is left. No key with [`Labels::None`].
+    #[must_use]
+    pub fn ramp_areas(&self, key: &RampKey<'_>, place: KeyPlace, (w, h): (usize, usize)) -> Areas {
+        let (w, h) = (w as f32, h as f32);
+        let font = self.fonts().0;
+        let lh = font.line_height() as f32;
+        // Beside the map a key takes at most half the width; elsewhere,
+        // the whole; a longer title is cut short.
+        let room = if place == KeyPlace::Right { 0.5 * w } else { w } - lh;
+        let (kw, kh) = key.size_within(font, room);
+        let (kw, kh) = (kw + lh, kh + lh);
+        let mut out = Areas {
+            map: [0.0, 0.0, w, h],
+            key: None,
+            shown: 0,
+        };
+        if self.labels == Labels::None || kw > w || kh > h {
+            return out;
+        }
+        out.shown = 1;
+        match place {
+            KeyPlace::Right if kw <= 0.5 * w => {
+                let y0 = (0.5 * (h - kh)).max(0.0);
+                out.map = [0.0, 0.0, w - kw, h];
+                out.key = Some([w - kw, y0, w, y0 + kh]);
+            }
+            KeyPlace::Below if kh <= 0.5 * h => {
+                let x0 = (0.5 * (w - kw)).max(0.0);
+                out.map = [0.0, 0.0, w, h - kh];
+                out.key = Some([x0, h - kh, x0 + kw, h]);
+            }
+            _ => {
+                let (right, bottom) = place.sides();
+                let x0 = if right { w - kw } else { 0.0 };
+                let y0 = if bottom { h - kh } else { 0.0 };
+                out.key = Some([x0, y0, x0 + kw, y0 + kh]);
+            }
+        }
+        out
+    }
+
+    /// Draw a ramp `key` in `ink` into `area` of `frame`, from
+    /// [`Panel::ramp_areas`] or [`Panel::ramp_key_frame`].
+    pub fn draw_ramp_key(&self, frame: &mut Frame, key: &RampKey<'_>, ink: Lin, area: Rect) {
+        draw_ramp_key_in(frame, key, self.fonts().0, ink, area, KeyPlace::TopLeft);
+    }
+
+    /// A ramp key alone, for a panel of its own beside a row of maps: the
+    /// panel's height, the key's width, the key centred on it.
+    ///
+    /// # Errors
+    /// As [`Panel::check`].
+    pub fn ramp_key_frame(
+        &self,
+        key: &RampKey<'_>,
+        ink: Lin,
+        page: Srgb,
+        keep_text: bool,
+    ) -> Result<Frame, String> {
+        let (_, h) = self.check()?;
+        let font = self.fonts().0;
+        let lh = font.line_height() as f32;
+        let (kw, kh) = key.size(font);
+        let w = (kw + lh).ceil() as usize;
+        let mut frame = self.blank(w, h, page, keep_text);
+        let y0 = (0.5 * (h as f32 - kh - lh)).max(0.0);
+        self.draw_ramp_key(&mut frame, key, ink, [0.0, y0, w as f32, h as f32]);
+        Ok(frame)
+    }
+
+    /// A blank `w × h` frame on the panel's background, its text kept
+    /// with `keep_text`: a key's alone.
+    fn blank(&self, w: usize, h: usize, page: Srgb, keep_text: bool) -> Frame {
         let mut frame = Frame::blank(w, h, self.page_colour(page));
         if self.is_transparent() {
             frame = frame.transparent();
@@ -399,9 +483,7 @@ impl Panel {
         if keep_text {
             frame.keep_text();
         }
-        let y0 = (0.5 * (h as f32 - key_h)).max(0.0);
-        self.draw_key(&mut frame, entries, [0.5 * lh, y0, w as f32, y0 + key_h]);
-        Ok(frame)
+        frame
     }
 
     /// `frame`, drawn with its text kept, as a PDF page: the text set at
@@ -430,22 +512,16 @@ impl Panel {
     /// # Errors
     /// When the image cannot be encoded.
     pub fn png(&self, frame: &Frame) -> io::Result<Vec<u8>> {
-        let img = frame.to_image();
-        let mut out = Vec::new();
-        let mut enc = png::Encoder::new(&mut out, img.width(), img.height());
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        // Pixels to the metre, both ways.
-        let ppm = (self.dpi as f32 / 0.0254).round() as u32;
-        enc.set_pixel_dims(Some(png::PixelDimensions {
-            xppu: ppm,
-            yppu: ppm,
-            unit: png::Unit::Meter,
-        }));
-        enc.write_header()
-            .and_then(|mut w| w.write_image_data(img.as_raw()))
-            .map_err(io::Error::other)?;
-        Ok(out)
+        super::png_at_dpi(&frame.to_image(), self.dpi as f32)
+    }
+
+    /// Write `page` to `path` as an SVG at the panel's resolution, in its
+    /// face: the points one image, the text and keys' labels as text.
+    ///
+    /// # Errors
+    /// As [`super::write_svg`].
+    pub fn write_svg(&self, page: &Page, path: &Path) -> io::Result<()> {
+        super::write_svg(page, self.dpi as f32, self.face, path)
     }
 
     /// Write `pages` to `path` at the panel's resolution, in its face.
@@ -471,6 +547,12 @@ pub struct PanelArgs {
 
     #[arg(long, help = "Save the starting view as a PNG panel too (or alone)")]
     pub png: Option<std::path::PathBuf>,
+
+    #[arg(
+        long,
+        help = "Save the starting view as an SVG panel too (or alone): the points one image, text and keys as text"
+    )]
+    pub svg: Option<std::path::PathBuf>,
 
     #[arg(
         long,
@@ -515,6 +597,7 @@ impl PanelArgs {
     pub fn wanted(&self) -> bool {
         self.height.is_some()
             || self.png.is_some()
+            || self.svg.is_some()
             || self.point_pt.is_some()
             || self.point_alpha.is_some()
             || self.background.is_some()
