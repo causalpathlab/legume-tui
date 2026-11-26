@@ -1,6 +1,6 @@
 [package]
 name = "legume-tui"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -42,7 +42,7 @@ map-display = ["map", "graphics"]
 # A map or a grid of them as a PDF page: the raster as one image, its text
 # set over it in Helvetica or Arial; page sizes, and `--pdf`, `--width`,
 # `--dpi`; a map as a figure panel (`Panel`, `PanelArgs`).
-export = ["map", "dep:pdf-writer", "dep:miniz_oxide", "dep:png"]
+export = ["map", "dep:pdf-writer", "dep:miniz_oxide", "dep:png", "dep:base64"]
 # pinto's own ways of putting a map on screen: kitty graphics with two
 # images in turn, through a file or inline, and coloured block characters.
 map-kitty = ["map", "graphics", "dep:flate2", "dep:base64"]

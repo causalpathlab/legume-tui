@@ -83,3 +83,35 @@ fn a_key_too_long_fills_its_rows_and_one_too_wide_goes_under_the_map() {
     let a = tiny.areas(&long, tiny.check().unwrap());
     assert_eq!((a.key, a.shown, a.map[2]), (None, 0, 90.0));
 }
+
+#[test]
+fn a_ramp_key_goes_beside_under_or_in_a_corner_of_the_map() {
+    let p = Panel::new(3.0, 2.0).with_font_pt(7.0);
+    let px = p.check().unwrap();
+    let ramp = [[0.0; 3], [1.0; 3]];
+    let ticks = [(0.0, "0".to_string()), (1.0, "10".to_string())];
+    let key = RampKey {
+        title: "score",
+        ramp: &ramp,
+        ticks: &ticks,
+        length: Some(6.0),
+        missing: None,
+    };
+    let right = p.ramp_areas(&key, KeyPlace::Right, px);
+    let k = right.key.unwrap();
+    assert_eq!(right.map[2], k[0]);
+    assert_eq!(k[2], px.0 as f32);
+    let below = p.ramp_areas(&key, KeyPlace::Below, px);
+    assert_eq!(below.map[3], below.key.unwrap()[1]);
+    let corner = p.ramp_areas(&key, KeyPlace::TopRight, px);
+    assert_eq!(corner.map, [0.0, 0.0, px.0 as f32, px.1 as f32]);
+    assert_eq!(corner.key.unwrap()[2], px.0 as f32);
+    // No key with no labels.
+    let none = p.clone().with_labels(Labels::None);
+    assert!(none.ramp_areas(&key, KeyPlace::Right, px).key.is_none());
+    // The key alone: the panel's height, its text kept.
+    let mut f = p.ramp_key_frame(&key, [0.0; 3], [255; 3], true).unwrap();
+    assert_eq!(f.h, px.1);
+    let text: Vec<String> = f.take_text().into_iter().map(|r| r.text).collect();
+    assert_eq!(text, ["score", "0", "10"]);
+}
